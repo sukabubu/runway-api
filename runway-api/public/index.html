@@ -79,7 +79,8 @@
               <label><input type="checkbox" name="generateAudio" checked> 生成音轨</label>
               <label><input type="checkbox" name="exploreMode" checked> 探索模式</label>
             </div>
-            <label class="full">参考素材<input name="media" type="file" accept="image/*,video/*" multiple></label>
+            <label class="full">参考素材 URL<textarea name="mediaUrls" rows="3" placeholder="优先填写图片或视频 URL，多个 URL 用换行或逗号分隔"></textarea></label>
+            <label class="full">本地参考素材<input name="media" type="file" accept="image/*,video/*" multiple></label>
             <button class="primary" type="submit">提交任务</button>
             <p id="modelError" class="error-text"></p>
           </form>

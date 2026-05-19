@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -37,6 +38,15 @@ describe('app frontend and auth', () => {
     const publicModels = await app.inject({ method: 'GET', url: '/models' });
     expect(publicModels.statusCode).toBe(200);
     expect(JSON.parse(publicModels.body).models.length).toBeGreaterThan(0);
+
+    const v1Models = await app.inject({ method: 'GET', url: '/v1/models' });
+    expect(v1Models.statusCode).toBe(200);
+    expect(JSON.parse(v1Models.body)).toMatchObject({
+      object: 'list',
+      data: expect.arrayContaining([
+        expect.objectContaining({ id: 'seedance_2', object: 'model', owned_by: 'runway' })
+      ])
+    });
 
     const unauthorized = await app.inject({ method: 'GET', url: '/tasks' });
     expect(unauthorized.statusCode).toBe(401);
@@ -190,5 +200,160 @@ describe('account admin API', () => {
     expect(db.listAccounts()).toHaveLength(3);
 
     await app.close();
+  });
+});
+
+describe('OpenAI compatible video API', () => {
+  it('creates and reads video jobs through /v1/videos routes', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-v1-test-'));
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'), { internalApiKey: 'secret' });
+    const app = await buildApp({
+      config: { internalApiKey: 'secret', uploadDir: path.join(dir, 'uploads') },
+      db,
+      browser: {
+        status: () => ({ started: false, pages: 0, headless: true }),
+        close: async () => {}
+      },
+      worker: {
+        start: () => {},
+        stop: async () => {}
+      },
+      logger: false
+    });
+
+    const unauthorized = await app.inject({
+      method: 'POST',
+      url: '/v1/videos',
+      payload: { model: 'seedance_2', prompt: 'hello' }
+    });
+    expect(unauthorized.statusCode).toBe(401);
+    expect(JSON.parse(unauthorized.body)).toMatchObject({
+      error: { code: 'unauthorized', type: 'invalid_request_error' }
+    });
+
+    const created = await app.inject({
+      method: 'POST',
+      url: '/v1/videos',
+      headers: { authorization: 'Bearer secret' },
+      payload: {
+        model: 'seedance_2',
+        input: 'a calm product video',
+        duration: 5,
+        resolution: '480p',
+        aspectRatio: '16:9'
+      }
+    });
+    expect(created.statusCode).toBe(202);
+    const body = JSON.parse(created.body);
+    expect(body).toMatchObject({
+      object: 'video',
+      model: 'seedance_2',
+      status: 'queued',
+      metadata: {
+        prompt: 'a calm product video',
+        duration: 5,
+        resolution: '480p',
+        aspect_ratio: '16:9'
+      }
+    });
+
+    const detail = await app.inject({
+      method: 'GET',
+      url: `/v1/videos/${body.id}`,
+      headers: { authorization: 'Bearer secret' }
+    });
+    expect(detail.statusCode).toBe(200);
+    expect(JSON.parse(detail.body)).toMatchObject({ id: body.id, object: 'video' });
+
+    const list = await app.inject({
+      method: 'GET',
+      url: '/v1/videos',
+      headers: { authorization: 'Bearer secret' }
+    });
+    expect(list.statusCode).toBe(200);
+    expect(JSON.parse(list.body)).toMatchObject({
+      object: 'list',
+      data: [expect.objectContaining({ id: body.id, object: 'video' })]
+    });
+
+    const events = await app.inject({
+      method: 'GET',
+      url: `/v1/videos/${body.id}/events`,
+      headers: { authorization: 'Bearer secret' }
+    });
+    expect(events.statusCode).toBe(200);
+    expect(JSON.parse(events.body)).toMatchObject({
+      object: 'list',
+      data: [expect.objectContaining({ type: 'queued' })]
+    });
+
+    const alias = await app.inject({
+      method: 'GET',
+      url: `/v1/videos/generations/${body.id}`,
+      headers: { authorization: 'Bearer secret' }
+    });
+    expect(alias.statusCode).toBe(200);
+    expect(JSON.parse(alias.body)).toMatchObject({ id: body.id, object: 'video.generation' });
+
+    await app.close();
+  });
+
+  it('downloads reference media URLs before queueing /v1/videos jobs', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-url-test-'));
+    const uploadDir = path.join(dir, 'uploads');
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'), { internalApiKey: 'secret' });
+    const mediaServer = http.createServer((request, response) => {
+      if (request.url === '/reference.png') {
+        response.writeHead(200, { 'Content-Type': 'image/png' });
+        response.end(Buffer.from('89504e470d0a1a0a', 'hex'));
+        return;
+      }
+      response.writeHead(404);
+      response.end();
+    });
+    await new Promise((resolve) => mediaServer.listen(0, '127.0.0.1', resolve));
+    const mediaUrl = `http://127.0.0.1:${mediaServer.address().port}/reference.png`;
+    const app = await buildApp({
+      config: { internalApiKey: 'secret', uploadDir },
+      db,
+      browser: {
+        status: () => ({ started: false, pages: 0, headless: true }),
+        close: async () => {}
+      },
+      worker: {
+        start: () => {},
+        stop: async () => {}
+      },
+      logger: false
+    });
+
+    const created = await app.inject({
+      method: 'POST',
+      url: '/v1/videos',
+      headers: { authorization: 'Bearer secret' },
+      payload: {
+        model: 'seedance_2',
+        input: 'use url reference',
+        media_urls: [mediaUrl]
+      }
+    });
+    expect(created.statusCode).toBe(202);
+    const task = JSON.parse(created.body);
+    const detail = await app.inject({
+      method: 'GET',
+      url: `/v1/videos/${task.id}`,
+      headers: { authorization: 'Bearer secret' }
+    });
+    const assets = JSON.parse(detail.body).metadata.assets;
+    expect(assets).toHaveLength(1);
+    expect(assets[0]).toMatchObject({
+      filename: 'reference.png',
+      mime_type: 'image/png',
+      media_type: 'image',
+      size: 8
+    });
+
+    await app.close();
+    await new Promise((resolve) => mediaServer.close(resolve));
   });
 });

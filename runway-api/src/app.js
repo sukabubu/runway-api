@@ -22,9 +22,9 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
   app.addHook('preHandler', async (request, reply) => {
     const pathname = request.url.split('?')[0];
     if (isPublicRoute(pathname)) return;
-    if (pathname.startsWith('/api/') || pathname.startsWith('/auth/') || pathname.startsWith('/admin/')) {
+    if (pathname.startsWith('/api/') || pathname.startsWith('/auth/') || pathname.startsWith('/admin/') || (pathname.startsWith('/v1/') && pathname !== '/v1/models')) {
       if (hasAdminSession(request) || hasApiKey(request)) return;
-      return reply.code(401).send({ error: 'unauthorized' });
+      return reply.code(401).send(pathname.startsWith('/v1/') ? toV1Error('unauthorized', '未登录或 API Key 不正确。') : { error: 'unauthorized' });
     }
     if (pathname.startsWith('/tasks')) {
       if (hasApiKey(request) || hasAdminSession(request)) return;
@@ -47,6 +47,10 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
   }));
 
   app.get('/models', async () => ({ models: RUNWAY_MODELS }));
+  app.get('/v1/models', async () => ({
+    object: 'list',
+    data: RUNWAY_MODELS.map(toV1Model)
+  }));
 
   app.post('/admin/login', async (request, reply) => {
     const cfg = db.getAdminConfig();
@@ -364,10 +368,40 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
     })
   }));
 
+  app.get('/v1/videos/generations', async (request) => ({
+    object: 'list',
+    data: db.listTasks({
+      status: request.query.status,
+      limit: request.query.limit,
+      offset: request.query.offset
+    }).map(toV1VideoGeneration)
+  }));
+
+  app.get('/v1/videos', async (request) => ({
+    object: 'list',
+    data: db.listTasks({
+      status: request.query.status,
+      limit: request.query.limit,
+      offset: request.query.offset
+    }).map((task) => toV1Video(task))
+  }));
+
   app.get('/tasks/:id', async (request, reply) => {
     const task = db.getTask(request.params.id);
     if (!task) return reply.code(404).send({ error: 'task not found' });
     return task;
+  });
+
+  app.get('/v1/videos/generations/:id', async (request, reply) => {
+    const task = db.getTask(request.params.id);
+    if (!task) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
+    return toV1VideoGeneration(task);
+  });
+
+  app.get('/v1/videos/:id', async (request, reply) => {
+    const task = db.getTask(request.params.id);
+    if (!task) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
+    return toV1Video(task);
   });
 
   app.get('/tasks/:id/events', async (request, reply) => {
@@ -376,28 +410,33 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
     return { events: db.getTaskEvents(request.params.id) };
   });
 
+  app.get('/v1/videos/:id/events', async (request, reply) => {
+    const task = db.getTask(request.params.id);
+    if (!task) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
+    return { object: 'list', data: db.getTaskEvents(request.params.id) };
+  });
+
   app.post('/tasks', async (request, reply) => {
     const { fields, files } = await readMultipartTask(request, config.uploadDir);
-    const taskConfig = normalizeTaskInput(fields);
-    const accountId = fields.accountId && fields.accountId !== 'auto' ? String(fields.accountId) : null;
-    if (accountId && !db.getAccount(accountId)) {
-      return reply.code(404).send({ error: 'account not found' });
-    }
-    const task = db.createTask({
-      id: randomUUID(),
-      status: 'pending',
-      accountId,
-      ...taskConfig
-    });
-    for (const file of files) {
-      db.addAsset({ ...file, taskId: task.id, accountId });
-    }
+    const task = createPendingTask({ db, fields, files });
     return reply.code(202).send({
       id: task.id,
       runwayTaskId: null,
       status: 'pending',
-      accountId
+      accountId: task.accountId
     });
+  });
+
+  app.post('/v1/videos/generations', async (request, reply) => {
+    const { fields, files } = await readTaskRequest(request, config.uploadDir);
+    const task = createPendingTask({ db, fields, files });
+    return reply.code(202).send(toV1VideoGeneration(task));
+  });
+
+  app.post('/v1/videos', async (request, reply) => {
+    const { fields, files } = await readTaskRequest(request, config.uploadDir);
+    const task = createPendingTask({ db, fields, files });
+    return reply.code(202).send(toV1Video(task));
   });
 
   app.post('/tasks/:id/retry', async (request, reply) => {
@@ -406,40 +445,34 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
     if (original.status !== 'failed') {
       return reply.code(409).send({ error: 'only failed tasks can be retried' });
     }
-    const retry = db.createTask({
-      id: randomUUID(),
-      parentTaskId: original.id,
-      accountId: original.accountId,
-      status: 'pending',
-      prompt: original.prompt,
-      model: original.model,
-      duration: original.duration,
-      resolution: original.resolution,
-      aspectRatio: original.aspectRatio,
-      generateAudio: original.generateAudio,
-      exploreMode: original.exploreMode
-    });
-    for (const asset of original.assets) {
-      db.addAsset({
-        id: randomUUID(),
-        taskId: retry.id,
-        accountId: original.accountId,
-        localPath: asset.localPath,
-	        filename: asset.filename,
-	        mimeType: asset.mimeType,
-	        mediaType: asset.mediaType,
-	        size: asset.size,
-        runwayAssetId: asset.runwayAssetId,
-        runwayUrl: asset.runwayUrl,
-        previewUrl: asset.previewUrl
-      });
-    }
+    const retry = createRetryTask({ db, original });
     return reply.code(202).send({ id: retry.id, runwayTaskId: null, status: retry.status, accountId: retry.accountId });
+  });
+
+  app.post('/v1/videos/generations/:id/retry', async (request, reply) => {
+    const original = db.getTask(request.params.id);
+    if (!original) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
+    if (original.status !== 'failed') {
+      return reply.code(409).send(toV1Error('invalid_state', '只有失败任务可以重试。'));
+    }
+    return reply.code(202).send(toV1VideoGeneration(createRetryTask({ db, original })));
+  });
+
+  app.post('/v1/videos/:id/retry', async (request, reply) => {
+    const original = db.getTask(request.params.id);
+    if (!original) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
+    if (original.status !== 'failed') {
+      return reply.code(409).send(toV1Error('invalid_state', '只有失败任务可以重试。'));
+    }
+    return reply.code(202).send(toV1Video(createRetryTask({ db, original })));
   });
 
   app.setErrorHandler((err, request, reply) => {
     request.log.error({ err }, 'request failed');
     const status = err.statusCode || err.status || 500;
+    if (request.url.split('?')[0].startsWith('/v1/')) {
+      return reply.code(status).send(toV1Error(err.code || 'request_failed', err.message));
+    }
     reply.code(status).send({
       error: err.code || 'request_failed',
       message: err.message
@@ -476,7 +509,9 @@ async function readMultipartTask(request, uploadDir) {
   const files = [];
   for await (const part of request.parts()) {
     if (part.type === 'field') {
-      fields[part.fieldname] = part.value;
+      if (fields[part.fieldname] == null) fields[part.fieldname] = part.value;
+      else if (Array.isArray(fields[part.fieldname])) fields[part.fieldname].push(part.value);
+      else fields[part.fieldname] = [fields[part.fieldname], part.value];
       continue;
     }
     const id = randomUUID();
@@ -500,7 +535,218 @@ async function readMultipartTask(request, uploadDir) {
       size: stat.size
     });
   }
+  files.push(...await downloadReferenceUrls(extractReferenceUrls(fields), uploadDir));
   return { fields, files };
+}
+
+async function readTaskRequest(request, uploadDir) {
+  if (typeof request.isMultipart === 'function' && request.isMultipart()) {
+    return readMultipartTask(request, uploadDir);
+  }
+  const body = request.body && typeof request.body === 'object' ? request.body : {};
+  const fields = {
+    ...body,
+    prompt: body.prompt ?? body.input,
+    accountId: body.accountId ?? body.account_id
+  };
+  const files = await downloadReferenceUrls(extractReferenceUrls(body), uploadDir);
+  return { fields, files };
+}
+
+function extractReferenceUrls(input = {}) {
+  return [
+    ...normalizeUrlList(input.mediaUrls ?? input.media_urls),
+    ...normalizeUrlList(input.referenceUrls ?? input.reference_urls),
+    ...normalizeUrlList(input.referenceUrl ?? input.reference_url),
+    ...normalizeUrlList(input.imageUrls ?? input.image_urls),
+    ...normalizeUrlList(input.videoUrls ?? input.video_urls)
+  ];
+}
+
+function normalizeUrlList(value) {
+  if (value == null || value === '') return [];
+  const values = Array.isArray(value) ? value : [value];
+  return values
+    .flatMap((item) => String(item || '').split(/[\n,]/))
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+async function downloadReferenceUrls(urls, uploadDir) {
+  if (!urls.length) return [];
+  fs.mkdirSync(uploadDir, { recursive: true });
+  const files = [];
+  for (const url of urls) {
+    files.push(await downloadReferenceUrl(url, uploadDir));
+  }
+  return files;
+}
+
+async function downloadReferenceUrl(url, uploadDir) {
+  const parsed = parseReferenceUrl(url);
+  const id = randomUUID();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 120000);
+  let response;
+  try {
+    response = await fetch(parsed.href, {
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: { 'User-Agent': 'runway-api/0.1' }
+    });
+  } catch (err) {
+    const error = new Error(`reference url download failed: ${err.message}`);
+    error.statusCode = 400;
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!response.ok) {
+    const err = new Error(`reference url returned ${response.status}`);
+    err.statusCode = 400;
+    throw err;
+  }
+  const contentLength = Number(response.headers.get('content-length') || 0);
+  const maxBytes = 200 * 1024 * 1024;
+  if (contentLength > maxBytes) {
+    const err = new Error(`reference url is too large (${contentLength} bytes), max is 200MB`);
+    err.statusCode = 400;
+    throw err;
+  }
+  const mimeType = normalizeMimeType(response.headers.get('content-type')) || inferMimeTypeFromUrl(parsed) || 'application/octet-stream';
+  const filename = filenameFromUrlOrHeaders(parsed, response.headers, mimeType, id);
+  const mediaType = classifyUpload(mimeType, filename);
+  if (!mediaType) {
+    const err = new Error('only image and video reference urls are supported');
+    err.statusCode = 400;
+    throw err;
+  }
+  const localPath = path.join(uploadDir, `${id}-${sanitizeFilename(filename)}`);
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (buffer.byteLength > maxBytes) {
+    const err = new Error(`reference url is too large (${buffer.byteLength} bytes), max is 200MB`);
+    err.statusCode = 400;
+    throw err;
+  }
+  await fs.promises.writeFile(localPath, buffer);
+  return {
+    id,
+    localPath,
+    filename: sanitizeFilename(filename),
+    mimeType,
+    mediaType,
+    size: buffer.byteLength
+  };
+}
+
+function parseReferenceUrl(value) {
+  let parsed;
+  try {
+    parsed = new URL(String(value || '').trim());
+  } catch {
+    const err = new Error('invalid reference url');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    const err = new Error('reference url must use http or https');
+    err.statusCode = 400;
+    throw err;
+  }
+  return parsed;
+}
+
+function normalizeMimeType(value) {
+  const raw = String(value || '').split(';')[0].trim().toLowerCase();
+  return raw || null;
+}
+
+function inferMimeTypeFromUrl(url) {
+  const ext = path.extname(url.pathname || '').toLowerCase();
+  return {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.webp': 'image/webp',
+    '.gif': 'image/gif',
+    '.mp4': 'video/mp4',
+    '.mov': 'video/quicktime',
+    '.webm': 'video/webm',
+    '.m4v': 'video/mp4'
+  }[ext] || null;
+}
+
+function filenameFromUrlOrHeaders(url, headers, mimeType, fallbackId) {
+  const disposition = headers.get('content-disposition') || '';
+  const match = disposition.match(/filename\*?=(?:UTF-8''|")?([^";]+)/i);
+  const fromHeader = match ? decodeURIComponent(match[1].replace(/^"|"$/g, '')) : null;
+  const fromUrl = path.basename(decodeURIComponent(url.pathname || ''));
+  const base = fromHeader || fromUrl || `reference-${fallbackId}${extensionForMimeType(mimeType)}`;
+  return sanitizeFilename(base.includes('.') ? base : `${base}${extensionForMimeType(mimeType)}`);
+}
+
+function extensionForMimeType(mimeType) {
+  return {
+    'image/jpeg': '.jpg',
+    'image/png': '.png',
+    'image/webp': '.webp',
+    'image/gif': '.gif',
+    'video/mp4': '.mp4',
+    'video/quicktime': '.mov',
+    'video/webm': '.webm'
+  }[mimeType] || '.bin';
+}
+
+function createPendingTask({ db, fields, files }) {
+  const taskConfig = normalizeTaskInput(fields);
+  const accountId = fields.accountId && fields.accountId !== 'auto' ? String(fields.accountId) : null;
+  if (accountId && !db.getAccount(accountId)) {
+    const err = new Error('account not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  const task = db.createTask({
+    id: randomUUID(),
+    status: 'pending',
+    accountId,
+    ...taskConfig
+  });
+  for (const file of files) {
+    db.addAsset({ ...file, taskId: task.id, accountId });
+  }
+  return task;
+}
+
+function createRetryTask({ db, original }) {
+  const retry = db.createTask({
+    id: randomUUID(),
+    parentTaskId: original.id,
+    accountId: original.accountId,
+    status: 'pending',
+    prompt: original.prompt,
+    model: original.model,
+    duration: original.duration,
+    resolution: original.resolution,
+    aspectRatio: original.aspectRatio,
+    generateAudio: original.generateAudio,
+    exploreMode: original.exploreMode
+  });
+  for (const asset of original.assets) {
+    db.addAsset({
+      id: randomUUID(),
+      taskId: retry.id,
+      accountId: original.accountId,
+      localPath: asset.localPath,
+      filename: asset.filename,
+      mimeType: asset.mimeType,
+      mediaType: asset.mediaType,
+      size: asset.size,
+      runwayAssetId: asset.runwayAssetId,
+      runwayUrl: asset.runwayUrl,
+      previewUrl: asset.previewUrl
+    });
+  }
+  return retry;
 }
 
 function normalizeAccountPatch(body) {
@@ -525,6 +771,105 @@ function normalizeAccountPatch(body) {
   if (body.authorization || body.jwt) patch.jwt = normalizeBearerToken(body.authorization || body.jwt);
   if (body.cookieHeader || body.cookie) patch.cookieHeader = normalizeCookieHeader(body.cookieHeader || body.cookie);
   return patch;
+}
+
+function toV1Model(model) {
+  return {
+    id: model.id,
+    object: 'model',
+    created: 0,
+    owned_by: 'runway',
+    name: model.label,
+    taskType: model.taskType,
+    durations: model.durations,
+    resolutions: model.resolutions,
+    aspectRatios: model.aspectRatios,
+    supportsAudio: model.supportsAudio,
+    supportsExploreMode: model.supportsExploreMode,
+    supportsReferenceImages: model.supportsReferenceImages,
+    supportsReferenceVideos: model.supportsReferenceVideos,
+    maxReferenceImages: model.maxReferenceImages,
+    maxReferenceVideos: model.maxReferenceVideos
+  };
+}
+
+function toV1VideoGeneration(task) {
+  return toV1Video(task, 'video.generation');
+}
+
+function toV1Video(task, object = 'video') {
+  return {
+    id: task.id,
+    object,
+    created: toUnixSeconds(task.createdAt),
+    model: task.model,
+    status: toV1TaskStatus(task.status),
+    runway_task_id: task.runwayTaskId,
+    account_id: task.accountId,
+    account_name: task.accountName,
+    progress: task.progress,
+    video_url: task.videoUrl,
+    thumbnail_url: task.thumbnailUrl,
+    error: task.status === 'failed'
+      ? {
+          message: task.errorSummary || task.errorCode || '任务失败',
+          code: task.errorCode,
+          category: task.errorCategory,
+          detail: task.errorDetail || task.error
+        }
+      : null,
+    metadata: {
+      raw_status: task.rawStatus,
+      prompt: task.prompt,
+      duration: task.duration,
+      resolution: task.resolution,
+      aspect_ratio: task.aspectRatio,
+      generate_audio: task.generateAudio,
+      explore_mode: task.exploreMode,
+      parent_task_id: task.parentTaskId,
+      assets: (task.assets || []).map((asset) => ({
+        id: asset.id,
+        filename: asset.filename,
+        mime_type: asset.mimeType,
+        media_type: asset.mediaType,
+        size: asset.size,
+        runway_asset_id: asset.runwayAssetId,
+        runway_url: asset.runwayUrl,
+        preview_url: asset.previewUrl
+      })),
+      created_at: task.createdAt,
+      updated_at: task.updatedAt,
+      submitted_at: task.submittedAt,
+      completed_at: task.completedAt
+    }
+  };
+}
+
+function toV1TaskStatus(status) {
+  return {
+    pending: 'queued',
+    submitting: 'in_progress',
+    queuing: 'queued',
+    generating: 'in_progress',
+    completed: 'completed',
+    failed: 'failed',
+    cancelled: 'cancelled'
+  }[status] || status || 'unknown';
+}
+
+function toUnixSeconds(value) {
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? Math.floor(time / 1000) : 0;
+}
+
+function toV1Error(code, message) {
+  return {
+    error: {
+      message,
+      type: 'invalid_request_error',
+      code
+    }
+  };
 }
 
 function extractImportItems(body, pluralKey, singularKey) {
@@ -669,7 +1014,7 @@ function classifyUpload(mimeType, filename) {
 }
 
 function isPublicRoute(pathname) {
-  return pathname === '/health' || pathname === '/models' || pathname === '/admin/login' || pathname === '/admin/me' || isPublicAsset(pathname);
+  return pathname === '/health' || pathname === '/models' || pathname === '/v1/models' || pathname === '/admin/login' || pathname === '/admin/me' || isPublicAsset(pathname);
 }
 
 function isPublicAsset(pathname) {

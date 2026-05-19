@@ -250,7 +250,7 @@ el.taskForm.addEventListener('submit', async (event) => {
   form.set('generateAudio', el.taskForm.generateAudio.checked ? 'true' : 'false');
   form.set('exploreMode', el.taskForm.exploreMode.checked ? 'true' : 'false');
   try {
-    const result = await fetchJson('/tasks', { method: 'POST', body: form });
+    const result = await fetchJson('/v1/videos', { method: 'POST', body: form });
     el.submitState.textContent = `已入队 ${result.id.slice(0, 8)}`;
     el.taskForm.reset();
     syncModelFields();
@@ -333,8 +333,8 @@ async function refreshHealth() {
 
 async function refreshModels() {
   try {
-    const { models } = await fetchJson('/models');
-    state.models = models || [];
+    const { data } = await fetchJson('/v1/models');
+    state.models = (data || []).map((model) => ({ ...model, label: model.name || model.id }));
     const current = el.modelSelect.value;
     el.modelSelect.innerHTML = state.models
       .map((model) => `<option value="${escapeHtml(model.id)}">${escapeHtml(model.label)}</option>`)
@@ -646,8 +646,8 @@ function openProxyDialog(proxy = null) {
 
 async function refreshTasks() {
   const query = el.statusFilter.value ? `?status=${encodeURIComponent(el.statusFilter.value)}` : '';
-  const { tasks } = await fetchJson(`/tasks${query}`);
-  renderTasks(tasks || []);
+  const { data } = await fetchJson(`/v1/videos${query}`);
+  renderTasks((data || []).map(fromV1Video));
 }
 
 function renderTasks(tasks) {
@@ -672,14 +672,14 @@ function renderTasks(tasks) {
   `;
   for (const button of $$('[data-retry]')) {
     button.addEventListener('click', async () => {
-      await fetchJson(`/tasks/${button.dataset.retry}/retry`, { method: 'POST' });
+      await fetchJson(`/v1/videos/${button.dataset.retry}/retry`, { method: 'POST' });
       await refreshTasks();
     });
   }
   for (const button of $$('[data-task-detail]')) {
     button.addEventListener('click', async () => {
-      const task = await fetchJson(`/tasks/${button.dataset.taskDetail}`);
-      const { events } = await fetchJson(`/tasks/${button.dataset.taskDetail}/events`);
+      const task = await fetchJson(`/v1/videos/${button.dataset.taskDetail}`);
+      const { data: events } = await fetchJson(`/v1/videos/${button.dataset.taskDetail}/events`);
       el.logDetail.textContent = JSON.stringify({ task, events }, null, 2);
       el.logDialog.showModal();
     });
@@ -698,6 +698,47 @@ function renderTaskResult(task) {
     ? `${task.errorSummary || ''}${task.errorCode ? `\n${task.errorCode}` : ''}${task.error?.message ? `\n${task.error.message}` : ''}`
     : text;
   return `<span title="${escapeAttr(title)}">${escapeHtml(text)}</span>`;
+}
+
+function fromV1Video(video) {
+  return {
+    id: video.id,
+    parentTaskId: video.metadata?.parent_task_id,
+    accountId: video.account_id,
+    accountName: video.account_name,
+    runwayTaskId: video.runway_task_id,
+    status: fromV1Status(video.status),
+    rawStatus: video.metadata?.raw_status,
+    prompt: video.metadata?.prompt || '',
+    model: video.model,
+    duration: video.metadata?.duration,
+    resolution: video.metadata?.resolution,
+    aspectRatio: video.metadata?.aspect_ratio,
+    generateAudio: video.metadata?.generate_audio,
+    exploreMode: video.metadata?.explore_mode,
+    progress: video.progress,
+    videoUrl: video.video_url,
+    thumbnailUrl: video.thumbnail_url,
+    errorSummary: video.error?.message,
+    errorCode: video.error?.code,
+    errorCategory: video.error?.category,
+    error: video.error,
+    createdAt: video.metadata?.created_at,
+    updatedAt: video.metadata?.updated_at,
+    submittedAt: video.metadata?.submitted_at,
+    completedAt: video.metadata?.completed_at,
+    assets: video.metadata?.assets || []
+  };
+}
+
+function fromV1Status(status) {
+  return {
+    queued: 'pending',
+    in_progress: 'generating',
+    completed: 'completed',
+    failed: 'failed',
+    cancelled: 'cancelled'
+  }[status] || status || 'unknown';
 }
 
 async function refreshConfig() {

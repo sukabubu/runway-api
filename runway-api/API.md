@@ -22,7 +22,129 @@ change-me
 
 如果你在后台“系统配置”里改过 API Key，以后台配置为准。
 
-## 1. 查看可用模型
+## 1. OpenAI 兼容接口
+
+外部业务方优先使用 `/v1/...` 接口，统一使用：
+
+```http
+Authorization: Bearer <API_KEY>
+```
+
+### `GET /v1/models`
+
+```bash
+curl http://127.0.0.1:8790/v1/models
+```
+
+返回 OpenAI 风格模型列表：
+
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "seedance_2",
+      "object": "model",
+      "owned_by": "runway"
+    }
+  ]
+}
+```
+
+### `POST /v1/videos`
+
+文生视频可以直接传 JSON。参考素材优先传 URL，字段支持 `media_urls`、`mediaUrls`、`reference_urls`、`referenceUrls`，可以是数组、逗号分隔或换行分隔字符串。
+
+URL 素材要求：
+
+- 只支持 `http` / `https`
+- 只支持图片和视频，不支持音频
+- 单个素材最大 `200MB`
+- 服务会先下载到本地 `UPLOAD_DIR`，再上传到 Runway
+
+```bash
+curl -X POST http://127.0.0.1:8790/v1/videos \
+  -H "Authorization: Bearer change-me" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "seedance_2",
+    "input": "a cinematic shot of waves at sunset, handheld camera, realistic lighting",
+    "duration": 5,
+    "resolution": "720p",
+    "aspectRatio": "16:9",
+    "generateAudio": true,
+    "exploreMode": true,
+    "media_urls": [
+      "https://example.com/reference.jpg",
+      "https://example.com/motion.mp4"
+    ]
+  }'
+```
+
+如果业务方必须上传本地文件，也可以使用 `multipart/form-data`；URL 和文件可以同时传：
+
+```bash
+curl -X POST http://127.0.0.1:8790/v1/videos \
+  -H "Authorization: Bearer change-me" \
+  -F "model=seedance_2" \
+  -F "input=animate this reference with a slow dolly-in camera move" \
+  -F "duration=5" \
+  -F "resolution=720p" \
+  -F "aspectRatio=16:9" \
+  -F "media_urls=https://example.com/reference.jpg" \
+  -F "media[]=@/absolute/path/to/reference.mp4"
+```
+
+成功响应：
+
+```json
+{
+  "id": "b3c9e2c4-4d4d-4a97-9d79-000000000000",
+  "object": "video",
+  "created": 1779190000,
+  "model": "seedance_2",
+  "status": "queued",
+  "runway_task_id": null,
+  "video_url": null,
+  "thumbnail_url": null,
+  "error": null
+}
+```
+
+### `GET /v1/videos/:id`
+
+```bash
+curl -H "Authorization: Bearer change-me" \
+  http://127.0.0.1:8790/v1/videos/<task-id>
+```
+
+状态值会映射为 OpenAI 风格：
+
+| status | 含义 |
+| --- | --- |
+| `queued` | 本地或 Runway 排队中 |
+| `in_progress` | 提交中或生成中 |
+| `completed` | 已完成，读取 `video_url` |
+| `failed` | 失败，读取 `error.message` |
+| `cancelled` | 已取消 |
+
+### `GET /v1/videos`
+
+```bash
+curl -H "Authorization: Bearer change-me" \
+  "http://127.0.0.1:8790/v1/videos?status=completed&limit=20"
+```
+
+### `POST /v1/videos/:id/retry`
+
+```bash
+curl -X POST -H "Authorization: Bearer change-me" \
+  http://127.0.0.1:8790/v1/videos/<task-id>/retry
+```
+
+只能重试失败任务。
+
+## 2. 可用模型
 
 ### `GET /models`
 
@@ -46,7 +168,11 @@ curl http://127.0.0.1:8790/models
 - 视频参考最多 `3` 个
 - 不支持上传音频。`generateAudio` 表示是否生成结果音轨，不是上传音频。
 
-## 2. 创建视频任务
+## 3. 旧版任务接口
+
+以下 `/tasks` 接口仅为历史兼容保留，不建议新接入使用。新接入统一使用上面的 OpenAI 兼容 `/v1/videos`。
+
+## 4. 创建视频任务
 
 ### `POST /tasks`
 
@@ -133,7 +259,7 @@ curl -X POST http://127.0.0.1:8790/tasks \
 
 这里的 `id` 是本地任务 ID，后续用它查询任务状态。
 
-## 3. 查询任务状态
+## 5. 查询任务状态
 
 ### `GET /tasks/:id`
 
@@ -211,7 +337,7 @@ curl -H "Authorization: Bearer change-me" \
 | `failed` | 失败，读取 `error` |
 | `cancelled` | 已取消 |
 
-## 4. 查询任务时间线
+## 6. 查询任务时间线
 
 ### `GET /tasks/:id/events`
 
@@ -222,7 +348,7 @@ curl -H "Authorization: Bearer change-me" \
 
 返回任务入队、账号分配、提交、状态变化、失败/完成等关键事件。历史任务没有事件记录时，服务会根据任务字段合成基础时间线。
 
-## 5. 查询任务列表
+## 7. 查询任务列表
 
 ### `GET /tasks`
 
@@ -246,7 +372,7 @@ curl -H "Authorization: Bearer change-me" \
 | `limit` | 可选，默认 `50`，最大 `200` |
 | `offset` | 可选，分页偏移 |
 
-## 6. 重试失败任务
+## 8. 重试失败任务
 
 ### `POST /tasks/:id/retry`
 
@@ -268,7 +394,7 @@ curl -X POST http://127.0.0.1:8790/tasks/<task-id>/retry \
 }
 ```
 
-## 7. Node.js 调用示例
+## 9. Node.js 调用示例
 
 ```js
 import fs from 'node:fs';
@@ -279,7 +405,7 @@ const baseUrl = 'http://127.0.0.1:8790';
 const apiKey = 'change-me';
 
 const form = new FormData();
-form.set('prompt', 'a cinematic product shot with slow camera movement');
+form.set('input', 'a cinematic product shot with slow camera movement');
 form.set('model', 'seedance_2');
 form.set('duration', '5');
 form.set('resolution', '720p');
@@ -290,7 +416,7 @@ form.set('exploreMode', 'true');
 const referencePath = '/absolute/path/to/reference.mp4';
 form.append('media[]', await fileFrom(referencePath), path.basename(referencePath));
 
-const createResp = await fetch(`${baseUrl}/tasks`, {
+const createResp = await fetch(`${baseUrl}/v1/videos`, {
   method: 'POST',
   headers: {
     Authorization: `Bearer ${apiKey}`
@@ -303,11 +429,11 @@ console.log(task);
 
 while (true) {
   await new Promise((resolve) => setTimeout(resolve, 5000));
-  const pollResp = await fetch(`${baseUrl}/tasks/${task.id}`, {
+  const pollResp = await fetch(`${baseUrl}/v1/videos/${task.id}`, {
     headers: { Authorization: `Bearer ${apiKey}` }
   });
   const current = await pollResp.json();
-  console.log(current.status, current.progress, current.videoUrl);
+  console.log(current.status, current.progress, current.video_url);
   if (['completed', 'failed', 'cancelled'].includes(current.status)) break;
 }
 ```
@@ -319,7 +445,7 @@ const blob = await fs.openAsBlob('/absolute/path/to/reference.mp4', { type: 'vid
 form.append('media[]', blob, 'reference.mp4');
 ```
 
-## 8. Python 调用示例
+## 10. Python 调用示例
 
 ```python
 import time
@@ -332,10 +458,10 @@ headers = {"Authorization": f"Bearer {API_KEY}"}
 
 with open("/absolute/path/to/reference.mp4", "rb") as f:
     resp = requests.post(
-        f"{BASE_URL}/tasks",
+        f"{BASE_URL}/v1/videos",
         headers=headers,
         data={
-            "prompt": "continue the motion and keep the same subject identity",
+            "input": "continue the motion and keep the same subject identity",
             "model": "seedance_2",
             "duration": "5",
             "resolution": "720p",
@@ -354,13 +480,13 @@ print(task)
 
 while True:
     time.sleep(5)
-    current = requests.get(f"{BASE_URL}/tasks/{task['id']}", headers=headers).json()
-    print(current.get("status"), current.get("progress"), current.get("videoUrl"))
+    current = requests.get(f"{BASE_URL}/v1/videos/{task['id']}", headers=headers).json()
+    print(current.get("status"), current.get("progress"), current.get("video_url"))
     if current.get("status") in ["completed", "failed", "cancelled"]:
         break
 ```
 
-## 9. 账号管理接口
+## 11. 账号管理接口
 
 账号管理接口主要给中文后台使用，也可以用 API 调用。
 
@@ -386,9 +512,9 @@ while True:
 
 也支持直接传数组、`{ "account": {...} }` 或单个账号对象。字段兼容 `authorization`、`cookie`、`team_id`、`asset_group_id`、`sourceVersion`、嵌套 `credentials` 等常见格式；重复 `id` 会自动生成新账号 ID。返回值会包含 `imported`、`skipped` 和逐条 `errors`，方便定位导入失败原因。
 
-## 10. 最小调用流程
+## 12. 最小调用流程
 
 1. 确保后台已有至少一个 `ready: true` 的 Runway 账号。
-2. 调用 `POST /tasks` 创建任务。
-3. 每 5 到 10 秒调用 `GET /tasks/:id` 查询状态。
-4. 当 `status` 为 `completed` 时读取 `videoUrl`。
+2. 调用 `POST /v1/videos` 创建任务。
+3. 每 5 到 10 秒调用 `GET /v1/videos/:id` 查询状态。
+4. 当 `status` 为 `completed` 时读取 `video_url`。
