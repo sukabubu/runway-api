@@ -144,7 +144,8 @@ describe('account admin API', () => {
         team_id: 2,
         asset_group_id: 'asset-2',
         client_id: 'client-2',
-        sourceVersion: 'web-version'
+        sourceVersion: 'web-version',
+        isActive: false
       }
     });
     expect(single.statusCode).toBe(200);
@@ -157,7 +158,8 @@ describe('account admin API', () => {
       teamId: 2,
       assetGroupId: 'asset-2',
       clientId: 'client-2',
-      sourceApplicationVersion: 'web-version'
+      sourceApplicationVersion: 'web-version',
+      isActive: false
     });
     expect(singleBody.accounts[0].id).not.toBe(existing.id);
 

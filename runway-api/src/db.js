@@ -495,7 +495,7 @@ export class RunwayDatabase {
       clientId: input.clientId ?? input.client_id ?? null,
       sourceApplicationVersion:
         input.sourceApplicationVersion ?? input.source_application_version ?? null,
-      isActive: input.isActive ?? input.is_active ?? 1,
+      isActive: normalizeBooleanFlag(input.isActive ?? input.is_active, 1),
       maxConcurrent: normalizeConcurrency(input.maxConcurrent ?? input.max_concurrent ?? this.options.defaultAccountConcurrency ?? 2),
       proxyId: input.proxyId ?? input.proxy_id ?? null,
       proxyStrategy: normalizeProxyStrategy(input.proxyStrategy ?? input.proxy_strategy ?? runtime.proxyStrategyDefault),
@@ -591,7 +591,7 @@ export class RunwayDatabase {
         patch.source_application_version ??
         current.sourceApplicationVersion ??
         null,
-      isActive: patch.isActive ?? patch.is_active ?? (current.isActive ? 1 : 0),
+      isActive: normalizeBooleanFlag(patch.isActive ?? patch.is_active, current.isActive ? 1 : 0),
       maxConcurrent: normalizeConcurrency(patch.maxConcurrent ?? patch.max_concurrent ?? current.maxConcurrent),
       proxyId: pickPatchValue(patch, ['proxyId', 'proxy_id'], current.proxyId ?? null),
       proxyStrategy: normalizeProxyStrategy(patch.proxyStrategy ?? patch.proxy_strategy ?? current.proxyStrategy),
@@ -782,7 +782,7 @@ export class RunwayDatabase {
       name: input.name || normalized.label,
       url: normalized.url,
       protocol: normalized.protocol,
-      isActive: input.isActive ?? input.is_active ?? 1,
+      isActive: normalizeBooleanFlag(input.isActive ?? input.is_active, 1),
       useCount: normalizeNonNegativeInt(input.useCount ?? input.use_count, 0),
       errorCount: normalizeNonNegativeInt(input.errorCount ?? input.error_count, 0),
       lastUsedAt: input.lastUsedAt ?? input.last_used_at ?? null,
@@ -832,7 +832,7 @@ export class RunwayDatabase {
       name: patch.name ?? current.name,
       url: normalized.url,
       protocol: normalized.protocol,
-      isActive: patch.isActive ?? patch.is_active ?? (current.isActive ? 1 : 0),
+      isActive: normalizeBooleanFlag(patch.isActive ?? patch.is_active, current.isActive ? 1 : 0),
       lastError: patch.lastError ?? patch.last_error ?? current.lastError ?? null,
       updatedAt: now
     });
@@ -1625,6 +1625,16 @@ function normalizeOptionalNonNegativeInt(value) {
 function normalizeGenerationLimit(value) {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 80;
+}
+
+function normalizeBooleanFlag(value, fallback = 0) {
+  if (value === undefined || value === null || value === '') return fallback ? 1 : 0;
+  if (typeof value === 'boolean') return value ? 1 : 0;
+  if (typeof value === 'number') return value ? 1 : 0;
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on', 'enabled', '启用'].includes(normalized)) return 1;
+  if (['0', 'false', 'no', 'off', 'disabled', '停用'].includes(normalized)) return 0;
+  return fallback ? 1 : 0;
 }
 
 function normalizeMs(value, fallback, min = 1) {
