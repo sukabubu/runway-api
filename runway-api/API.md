@@ -3,7 +3,7 @@
 本文档只说明外部业务方如何调用本服务生成视频。默认服务地址：
 
 ```text
-http://127.0.0.1:8787
+http://127.0.0.1:8790
 ```
 
 ## 鉴权
@@ -27,7 +27,7 @@ change-me
 ### `GET /models`
 
 ```bash
-curl http://127.0.0.1:8787/models
+curl http://127.0.0.1:8790/models
 ```
 
 当前主要模型：
@@ -69,7 +69,7 @@ curl http://127.0.0.1:8787/models
 ### 文生视频
 
 ```bash
-curl -X POST http://127.0.0.1:8787/tasks \
+curl -X POST http://127.0.0.1:8790/tasks \
   -H "Authorization: Bearer change-me" \
   -F "prompt=a cinematic shot of waves at sunset, handheld camera, realistic lighting" \
   -F "model=seedance_2" \
@@ -83,7 +83,7 @@ curl -X POST http://127.0.0.1:8787/tasks \
 ### 图生视频
 
 ```bash
-curl -X POST http://127.0.0.1:8787/tasks \
+curl -X POST http://127.0.0.1:8790/tasks \
   -H "Authorization: Bearer change-me" \
   -F "prompt=animate this product shot with a slow dolly-in camera move" \
   -F "model=seedance_2" \
@@ -96,7 +96,7 @@ curl -X POST http://127.0.0.1:8787/tasks \
 ### 视频参考生成
 
 ```bash
-curl -X POST http://127.0.0.1:8787/tasks \
+curl -X POST http://127.0.0.1:8790/tasks \
   -H "Authorization: Bearer change-me" \
   -F "prompt=continue the motion and keep the same subject identity" \
   -F "model=seedance_2" \
@@ -109,7 +109,7 @@ curl -X POST http://127.0.0.1:8787/tasks \
 ### 图片 + 视频参考
 
 ```bash
-curl -X POST http://127.0.0.1:8787/tasks \
+curl -X POST http://127.0.0.1:8790/tasks \
   -H "Authorization: Bearer change-me" \
   -F "prompt=use the image as subject reference and the video as motion reference" \
   -F "model=seedance_2" \
@@ -139,7 +139,7 @@ curl -X POST http://127.0.0.1:8787/tasks \
 
 ```bash
 curl -H "Authorization: Bearer change-me" \
-  http://127.0.0.1:8787/tasks/<task-id>
+  http://127.0.0.1:8790/tasks/<task-id>
 ```
 
 完成前响应示例：
@@ -176,12 +176,28 @@ curl -H "Authorization: Bearer change-me" \
 {
   "id": "b3c9e2c4-4d4d-4a97-9d79-000000000000",
   "status": "failed",
+  "rawStatus": "FAILED",
+  "errorSummary": "参考素材未通过内容审核",
+  "errorCode": "SAFETY.INPUT.MULTIMODAL",
+  "errorCategory": "SEXUALLY_EXPLICIT",
   "error": {
-    "code": "SUBMIT_FAILED",
-    "message": "失败原因"
+    "code": "SAFETY.INPUT.MULTIMODAL",
+    "message": "Input media did not pass content moderation."
   }
 }
 ```
+
+失败时优先给业务方展示 `errorSummary`。`errorDetail` 和 `rawResponse` 会保留 Runway 原始返回，方便排查。
+
+常见中文摘要：
+
+| errorSummary | 说明 |
+| --- | --- |
+| `参考素材未通过内容审核` | 图片或视频参考素材未过审 |
+| `提示词未通过内容审核` | prompt 文本未过审 |
+| `账号凭证失效` | JWT/Cookie 不可用，需要刷新或重新导入 |
+| `上传或请求超时` | 上传、S3 或请求超时 |
+| `Runway 服务暂时不可用` | Runway 5xx 或临时服务错误 |
 
 任务状态：
 
@@ -195,20 +211,31 @@ curl -H "Authorization: Bearer change-me" \
 | `failed` | 失败，读取 `error` |
 | `cancelled` | 已取消 |
 
-## 4. 查询任务列表
+## 4. 查询任务时间线
+
+### `GET /tasks/:id/events`
+
+```bash
+curl -H "Authorization: Bearer change-me" \
+  http://127.0.0.1:8790/tasks/<task-id>/events
+```
+
+返回任务入队、账号分配、提交、状态变化、失败/完成等关键事件。历史任务没有事件记录时，服务会根据任务字段合成基础时间线。
+
+## 5. 查询任务列表
 
 ### `GET /tasks`
 
 ```bash
 curl -H "Authorization: Bearer change-me" \
-  "http://127.0.0.1:8787/tasks?limit=20"
+  "http://127.0.0.1:8790/tasks?limit=20"
 ```
 
 按状态筛选：
 
 ```bash
 curl -H "Authorization: Bearer change-me" \
-  "http://127.0.0.1:8787/tasks?status=completed&limit=20"
+  "http://127.0.0.1:8790/tasks?status=completed&limit=20"
 ```
 
 查询参数：
@@ -219,14 +246,14 @@ curl -H "Authorization: Bearer change-me" \
 | `limit` | 可选，默认 `50`，最大 `200` |
 | `offset` | 可选，分页偏移 |
 
-## 5. 重试失败任务
+## 6. 重试失败任务
 
 ### `POST /tasks/:id/retry`
 
 只允许重试 `failed` 状态的任务。
 
 ```bash
-curl -X POST http://127.0.0.1:8787/tasks/<task-id>/retry \
+curl -X POST http://127.0.0.1:8790/tasks/<task-id>/retry \
   -H "Authorization: Bearer change-me"
 ```
 
@@ -241,14 +268,14 @@ curl -X POST http://127.0.0.1:8787/tasks/<task-id>/retry \
 }
 ```
 
-## 6. Node.js 调用示例
+## 7. Node.js 调用示例
 
 ```js
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileFrom } from 'node-fetch';
 
-const baseUrl = 'http://127.0.0.1:8787';
+const baseUrl = 'http://127.0.0.1:8790';
 const apiKey = 'change-me';
 
 const form = new FormData();
@@ -292,13 +319,13 @@ const blob = await fs.openAsBlob('/absolute/path/to/reference.mp4', { type: 'vid
 form.append('media[]', blob, 'reference.mp4');
 ```
 
-## 7. Python 调用示例
+## 8. Python 调用示例
 
 ```python
 import time
 import requests
 
-BASE_URL = "http://127.0.0.1:8787"
+BASE_URL = "http://127.0.0.1:8790"
 API_KEY = "change-me"
 
 headers = {"Authorization": f"Bearer {API_KEY}"}
@@ -333,7 +360,25 @@ while True:
         break
 ```
 
-## 8. 最小调用流程
+## 9. 账号管理接口
+
+账号管理接口主要给中文后台使用，也可以用 API 调用。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/accounts` | 账号列表，不返回明文 JWT/Cookie |
+| `GET` | `/api/accounts/:id` | 账号详情，返回 JWT/Cookie，用于编辑 |
+| `POST` | `/api/accounts/manual` | 手动添加账号 |
+| `PUT` | `/api/accounts/:id` | 修改账号配置和凭证 |
+| `POST` | `/api/accounts/:id/refresh-jwt` | 用 Cookie 刷新 JWT |
+| `GET` | `/api/accounts/:id/runway-credits` | 查询并缓存 Runway 额度 |
+| `POST` | `/api/accounts/:id/reset-generation-usage` | 重置本地生成计数 |
+| `GET` | `/api/accounts/export` | 导出账号 JSON，包含敏感凭证 |
+| `POST` | `/api/accounts/import` | 导入账号 JSON |
+
+注意：`/api/accounts/export` 导出的 JSON 包含 `jwt` 和 `cookieHeader`，不要提交到 Git。
+
+## 10. 最小调用流程
 
 1. 确保后台已有至少一个 `ready: true` 的 Runway 账号。
 2. 调用 `POST /tasks` 创建任务。
