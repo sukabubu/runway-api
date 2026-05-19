@@ -330,7 +330,7 @@ form {
 
 .accounts-head,
 .accounts-row {
-  grid-template-columns: minmax(170px, 1.1fr) 82px 82px minmax(120px, 0.85fr) minmax(170px, 1fr) minmax(150px, 1fr) minmax(300px, auto);
+  grid-template-columns: minmax(170px, 1.2fr) 78px 72px minmax(110px, 0.8fr) minmax(150px, 1fr) minmax(130px, 0.9fr) minmax(160px, 1fr) 210px;
 }
 
 .tasks-head,
@@ -373,7 +373,8 @@ form {
   gap: 4px;
 }
 
-.proxy-cell {
+.proxy-cell,
+.credit-cell {
   display: grid;
   grid-template-columns: 1fr;
   gap: 6px;
@@ -435,12 +436,54 @@ dialog {
   padding: 0;
 }
 
+dialog.wide-dialog {
+  width: min(980px, calc(100% - 32px));
+}
+
 dialog::backdrop {
   background: rgba(15, 23, 42, 0.32);
 }
 
 .dialog-form {
   padding: 18px;
+}
+
+.dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.detail-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+}
+
+.detail-summary div {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  padding: 10px 12px;
+  min-width: 0;
+}
+
+.detail-summary span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.detail-summary strong {
+  display: block;
+  margin-top: 4px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
 }
 
 .log-detail {

@@ -81,6 +81,8 @@ export class RunwayDatabase {
         upload_timeout_ms INTEGER,
         task_timeout_ms INTEGER,
         max_retries INTEGER,
+        runway_credits_json TEXT,
+        runway_credits_checked_at TEXT,
         inflight INTEGER NOT NULL DEFAULT 0,
         error_count INTEGER NOT NULL DEFAULT 0,
         consecutive_error_count INTEGER NOT NULL DEFAULT 0,
@@ -226,6 +228,8 @@ export class RunwayDatabase {
     this.addColumnIfMissing('accounts', 'upload_timeout_ms', 'INTEGER');
     this.addColumnIfMissing('accounts', 'task_timeout_ms', 'INTEGER');
     this.addColumnIfMissing('accounts', 'max_retries', 'INTEGER');
+    this.addColumnIfMissing('accounts', 'runway_credits_json', 'TEXT');
+    this.addColumnIfMissing('accounts', 'runway_credits_checked_at', 'TEXT');
     this.addColumnIfMissing('accounts', 'last_auth_failed_at', 'TEXT');
     this.addColumnIfMissing('request_logs', 'proxy_id', 'TEXT');
     this.addColumnIfMissing('request_logs', 'status_code', 'INTEGER');
@@ -469,12 +473,14 @@ export class RunwayDatabase {
         id, name, remark, jwt, cookie_header, team_id, asset_group_id, client_id, source_application_version,
         is_active, max_concurrent, proxy_id, proxy_strategy, generation_limit, generation_used,
         generation_reset_at, request_timeout_ms, upload_timeout_ms, task_timeout_ms, max_retries,
+        runway_credits_json, runway_credits_checked_at,
         inflight, error_count, consecutive_error_count, last_error, last_auth_failed_at, last_used_at,
         captured_at, created_at, updated_at
       ) VALUES (
         @id, @name, @remark, @jwt, @cookieHeader, @teamId, @assetGroupId, @clientId, @sourceApplicationVersion,
         @isActive, @maxConcurrent, @proxyId, @proxyStrategy, @generationLimit, @generationUsed,
         @generationResetAt, @requestTimeoutMs, @uploadTimeoutMs, @taskTimeoutMs, @maxRetries,
+        @runwayCreditsJson, @runwayCreditsCheckedAt,
         @inflight, @errorCount, @consecutiveErrorCount, @lastError, @lastAuthFailedAt, @lastUsedAt,
         @capturedAt, @createdAt, @updatedAt
       )
@@ -500,6 +506,8 @@ export class RunwayDatabase {
       uploadTimeoutMs: normalizeOptionalMs(input.uploadTimeoutMs ?? input.upload_timeout_ms),
       taskTimeoutMs: normalizeOptionalMs(input.taskTimeoutMs ?? input.task_timeout_ms),
       maxRetries: normalizeOptionalNonNegativeInt(input.maxRetries ?? input.max_retries),
+      runwayCreditsJson: input.runwayCreditsJson ?? input.runway_credits_json ?? null,
+      runwayCreditsCheckedAt: input.runwayCreditsCheckedAt ?? input.runway_credits_checked_at ?? null,
       inflight: Math.max(Number(input.inflight) || 0, 0),
       errorCount: Math.max(Number(input.errorCount ?? input.error_count) || 0, 0),
       consecutiveErrorCount: Math.max(Number(input.consecutiveErrorCount ?? input.consecutive_error_count) || 0, 0),
@@ -558,6 +566,8 @@ export class RunwayDatabase {
         upload_timeout_ms = @uploadTimeoutMs,
         task_timeout_ms = @taskTimeoutMs,
         max_retries = @maxRetries,
+        runway_credits_json = @runwayCreditsJson,
+        runway_credits_checked_at = @runwayCreditsCheckedAt,
         inflight = @inflight,
         error_count = @errorCount,
         consecutive_error_count = @consecutiveErrorCount,
@@ -592,6 +602,8 @@ export class RunwayDatabase {
       uploadTimeoutMs: normalizeOptionalMs(patch.uploadTimeoutMs ?? patch.upload_timeout_ms ?? current.uploadTimeoutMs),
       taskTimeoutMs: normalizeOptionalMs(patch.taskTimeoutMs ?? patch.task_timeout_ms ?? current.taskTimeoutMs),
       maxRetries: normalizeOptionalNonNegativeInt(patch.maxRetries ?? patch.max_retries ?? current.maxRetries),
+      runwayCreditsJson: pickPatchValue(patch, ['runwayCreditsJson', 'runway_credits_json'], current.runwayCreditsJson ?? null),
+      runwayCreditsCheckedAt: pickPatchValue(patch, ['runwayCreditsCheckedAt', 'runway_credits_checked_at'], current.runwayCreditsCheckedAt ?? null),
       inflight: Math.max(Number(patch.inflight ?? current.inflight) || 0, 0),
       errorCount: Math.max(Number(patch.errorCount ?? patch.error_count ?? current.errorCount) || 0, 0),
       consecutiveErrorCount: Math.max(Number(patch.consecutiveErrorCount ?? patch.consecutive_error_count ?? current.consecutiveErrorCount) || 0, 0),
@@ -632,6 +644,16 @@ export class RunwayDatabase {
       WHERE id = @id
     `).run({ id, now });
     return this.getAccount(id, { includeSecret: true });
+  }
+
+  updateAccountCredits(id, credits) {
+    const now = new Date().toISOString();
+    const result = this.db.prepare(`
+      UPDATE accounts
+      SET runway_credits_json = @credits, runway_credits_checked_at = @now, updated_at = @now
+      WHERE id = @id
+    `).run({ id, credits: stringify(credits), now });
+    return result.changes ? this.getAccount(id) : null;
   }
 
   upsertAccountCredentials(id, patch = {}) {
@@ -1710,6 +1732,8 @@ function hydrateAccount(row, { includeSecret = false } = {}) {
     uploadTimeoutMs: row.upload_timeout_ms,
     taskTimeoutMs: row.task_timeout_ms,
     maxRetries: row.max_retries,
+    runwayCredits: parseJson(row.runway_credits_json),
+    runwayCreditsCheckedAt: row.runway_credits_checked_at,
     inflight: row.inflight,
     errorCount: row.error_count,
     consecutiveErrorCount: row.consecutive_error_count,

@@ -32,6 +32,10 @@ const el = {
   manualDialog: $('#manualDialog'),
   manualForm: $('#manualForm'),
   manualProxySelect: $('#manualProxySelect'),
+  accountDialog: $('#accountDialog'),
+  accountForm: $('#accountForm'),
+  accountProxySelect: $('#accountProxySelect'),
+  accountDetailSummary: $('#accountDetailSummary'),
   showProxyDialog: $('#showProxyDialog'),
   exportProxies: $('#exportProxies'),
   importProxies: $('#importProxies'),
@@ -122,6 +126,76 @@ el.manualForm.addEventListener('submit', async (event) => {
   el.manualForm.reset();
   el.manualForm.maxConcurrent.value = 2;
   el.manualForm.generationLimit.value = 80;
+  await refreshAccounts();
+});
+
+el.accountForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const id = el.accountForm.id.value;
+  if (!id) return;
+  const body = accountFormBody();
+  await fetchJson(`/api/accounts/${id}`, jsonOptions('PUT', body));
+  el.accountDialog.close();
+  await refreshAccounts();
+});
+
+el.accountForm.querySelector('[data-account-query-credits]').addEventListener('click', async () => {
+  const id = el.accountForm.id.value;
+  if (!id) return;
+  const button = el.accountForm.querySelector('[data-account-query-credits]');
+  button.disabled = true;
+  button.textContent = '查询中';
+  try {
+    const { account } = await fetchJson(`/api/accounts/${id}/runway-credits`);
+    await refreshAccounts();
+    fillAccountForm(account.id);
+  } catch (err) {
+    alert(`Runway 额度查询失败：${err.message}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = '查询Runway额度';
+  }
+});
+
+el.accountForm.querySelector('[data-account-refresh-jwt]').addEventListener('click', async () => {
+  const id = el.accountForm.id.value;
+  if (!id) return;
+  const button = el.accountForm.querySelector('[data-account-refresh-jwt]');
+  button.disabled = true;
+  button.textContent = '刷新中';
+  try {
+    await fetchJson(`/api/accounts/${id}/refresh-jwt`, { method: 'POST' });
+    await refreshAccounts();
+    await fillAccountForm(id);
+  } catch (err) {
+    alert(`JWT刷新失败：${err.message}`);
+  } finally {
+    button.disabled = false;
+    button.textContent = '刷新JWT';
+  }
+});
+
+el.accountForm.querySelector('[data-account-open-login]').addEventListener('click', async () => {
+  const id = el.accountForm.id.value;
+  if (!id) return;
+  await fetchJson(`/api/accounts/${id}/open-login`, { method: 'POST' });
+  await refreshAccounts();
+  await fillAccountForm(id);
+});
+
+el.accountForm.querySelector('[data-account-reset-quota]').addEventListener('click', async () => {
+  const id = el.accountForm.id.value;
+  if (!id) return;
+  await fetchJson(`/api/accounts/${id}/reset-generation-usage`, { method: 'POST' });
+  await refreshAccounts();
+  await fillAccountForm(id);
+});
+
+el.accountForm.querySelector('[data-account-delete]').addEventListener('click', async () => {
+  const id = el.accountForm.id.value;
+  if (!id || !confirm('确认删除这个账号？任务记录会保留，但不再绑定该账号。')) return;
+  await fetchJson(`/api/accounts/${id}`, { method: 'DELETE' });
+  el.accountDialog.close();
   await refreshAccounts();
 });
 
@@ -318,6 +392,11 @@ function renderManualProxySelect() {
   const current = el.manualProxySelect.value;
   el.manualProxySelect.innerHTML = proxyOptions(current);
   if (current && state.proxies.some((proxy) => proxy.id === current)) el.manualProxySelect.value = current;
+  if (el.accountProxySelect) {
+    const selected = el.accountProxySelect.value;
+    el.accountProxySelect.innerHTML = proxyOptions(selected);
+    if (selected && state.proxies.some((proxy) => proxy.id === selected)) el.accountProxySelect.value = selected;
+  }
 }
 
 function proxyOptions(selected = '') {
@@ -341,18 +420,16 @@ function renderAccounts(accounts) {
   }
   el.accounts.innerHTML = `
     <div class="table-head accounts-head">
-      <span>账号</span><span>状态</span><span>并发</span><span>生成上限</span><span>代理</span><span>凭证</span><span>操作</span>
+      <span>账号</span><span>状态</span><span>并发</span><span>本地生成数</span><span>Runway额度</span><span>代理</span><span>凭证</span><span>操作</span>
     </div>
     ${accounts.map((account) => `
       <div class="table-row accounts-row">
         <div><strong>${escapeHtml(account.name)}</strong><small>${escapeHtml(account.remark || account.id)}</small></div>
         <span class="badge ${account.isActive ? 'completed' : 'failed'}">${account.isActive ? '启用' : '停用'}</span>
-        <label class="compact-input"><input data-concurrency="${escapeAttr(account.id)}" type="number" min="1" value="${account.maxConcurrent}"></label>
-        <label class="quota-input"><input data-generation-limit="${escapeAttr(account.id)}" type="number" min="1" value="${account.generationLimit || 80}"><small>本地 ${account.generationUsed || 0}/${account.generationLimit || 80}，剩余 ${account.generationRemaining ?? '-'}</small></label>
-        <div class="proxy-cell">
-          <select data-account-proxy="${escapeAttr(account.id)}">${proxyOptions(account.proxyId)}</select>
-          <select data-account-strategy="${escapeAttr(account.id)}">${strategyOptions(account.proxyStrategy)}</select>
-        </div>
+        <span>${account.inflight || 0}/${account.maxConcurrent || 2}</span>
+        <div><strong>${account.generationUsed || 0}/${account.generationLimit || 80}</strong><small>剩余 ${account.generationRemaining ?? '-'}</small></div>
+        <div class="credit-cell">${renderCreditSummary(account)}</div>
+        <div><span>${escapeHtml(account.proxyName || '不绑定/自动')}</span><small>${escapeHtml(formatProxyStrategy(account.proxyStrategy))}</small></div>
         <div class="credential-cell">
           <span>${account.ready ? '完整' : '缺失'}</span>
           <small>JWT ${account.hasJwt ? '有' : '无'} / Cookie ${account.hasCookie ? '有' : '无'}</small>
@@ -360,12 +437,9 @@ function renderAccounts(accounts) {
           <small>错误 ${account.errorCount || 0}${account.lastAuthFailedAt ? ` / 认证失败 ${formatDate(account.lastAuthFailedAt)}` : ''}</small>
         </div>
         <div class="row-actions">
+          <button type="button" data-account-detail="${escapeAttr(account.id)}">详情</button>
           <button type="button" data-open-login="${escapeAttr(account.id)}">网页登录</button>
-          <button type="button" data-refresh-jwt="${escapeAttr(account.id)}">刷新JWT</button>
-          <button type="button" data-query-credits="${escapeAttr(account.id)}">查Runway额度</button>
-          <button type="button" data-reset-quota="${escapeAttr(account.id)}">重置生成数</button>
           <button type="button" data-toggle="${escapeAttr(account.id)}" data-active="${account.isActive ? '1' : '0'}">${account.isActive ? '禁用' : '启用'}</button>
-          <button type="button" data-delete="${escapeAttr(account.id)}">删除</button>
         </div>
       </div>
     `).join('')}
@@ -374,65 +448,9 @@ function renderAccounts(accounts) {
 }
 
 function bindAccountActions() {
-  for (const input of $$('[data-concurrency]')) {
-    input.addEventListener('change', async () => {
-      await fetchJson(`/api/accounts/${input.dataset.concurrency}`, jsonOptions('PUT', { maxConcurrent: Number(input.value || 2) }));
-      await refreshAccounts();
-    });
-  }
-  for (const input of $$('[data-generation-limit]')) {
-    input.addEventListener('change', async () => {
-      await fetchJson(`/api/accounts/${input.dataset.generationLimit}`, jsonOptions('PUT', { generationLimit: Number(input.value || 80) }));
-      await refreshAccounts();
-    });
-  }
-  for (const select of $$('[data-account-proxy]')) {
-    select.addEventListener('change', async () => {
-      await fetchJson(`/api/accounts/${select.dataset.accountProxy}`, jsonOptions('PUT', { proxyId: select.value || null }));
-      await refreshAccounts();
-    });
-  }
-  for (const select of $$('[data-account-strategy]')) {
-    select.addEventListener('change', async () => {
-      await fetchJson(`/api/accounts/${select.dataset.accountStrategy}`, jsonOptions('PUT', { proxyStrategy: select.value }));
-      await refreshAccounts();
-    });
-  }
-  for (const button of $$('[data-reset-quota]')) {
+  for (const button of $$('[data-account-detail]')) {
     button.addEventListener('click', async () => {
-      await fetchJson(`/api/accounts/${button.dataset.resetQuota}/reset-generation-usage`, { method: 'POST' });
-      await refreshAccounts();
-    });
-  }
-  for (const button of $$('[data-query-credits]')) {
-    button.addEventListener('click', async () => {
-      button.disabled = true;
-      button.textContent = '查询中';
-      try {
-        const { credits } = await fetchJson(`/api/accounts/${button.dataset.queryCredits}/runway-credits`);
-        alert(formatRunwayCredits(credits));
-      } catch (err) {
-        alert(`Runway 额度查询失败：${err.message}`);
-      } finally {
-        button.disabled = false;
-        button.textContent = '查Runway额度';
-        await refreshAccounts();
-      }
-    });
-  }
-  for (const button of $$('[data-refresh-jwt]')) {
-    button.addEventListener('click', async () => {
-      button.disabled = true;
-      button.textContent = '刷新中';
-      try {
-        await fetchJson(`/api/accounts/${button.dataset.refreshJwt}/refresh-jwt`, { method: 'POST' });
-        await refreshAccounts();
-      } catch (err) {
-        alert(`JWT刷新失败：${err.message}`);
-      } finally {
-        button.disabled = false;
-        button.textContent = '刷新JWT';
-      }
+      await openAccountDialog(button.dataset.accountDetail);
     });
   }
   for (const button of $$('[data-open-login]')) {
@@ -453,13 +471,97 @@ function bindAccountActions() {
       await refreshAccounts();
     });
   }
-  for (const button of $$('[data-delete]')) {
-    button.addEventListener('click', async () => {
-      if (!confirm('确认删除这个账号？任务记录会保留，但不再绑定该账号。')) return;
-      await fetchJson(`/api/accounts/${button.dataset.delete}`, { method: 'DELETE' });
-      await refreshAccounts();
-    });
+}
+
+async function openAccountDialog(id) {
+  await fillAccountForm(id);
+  el.accountDialog.showModal();
+}
+
+async function fillAccountForm(id) {
+  const { account } = await fetchJson(`/api/accounts/${id}`);
+  state.accounts = state.accounts.map((item) => (item.id === account.id ? { ...item, ...withoutSecrets(account) } : item));
+  const form = el.accountForm;
+  form.reset();
+  form.id.value = account.id;
+  form.name.value = account.name || '';
+  form.remark.value = account.remark || '';
+  form.maxConcurrent.value = account.maxConcurrent || 2;
+  form.generationLimit.value = account.generationLimit || 80;
+  form.proxyId.innerHTML = proxyOptions(account.proxyId);
+  form.proxyId.value = account.proxyId || '';
+  form.proxyStrategy.value = account.proxyStrategy || 'fixed';
+  form.authorization.value = account.jwt ? `Bearer ${account.jwt}` : '';
+  form.cookie.value = account.cookieHeader || '';
+  form.teamId.value = account.teamId || '';
+  form.assetGroupId.value = account.assetGroupId || '';
+  form.clientId.value = account.clientId || '';
+  form.sourceVersion.value = account.sourceApplicationVersion || '';
+  form.requestTimeoutMs.value = account.requestTimeoutMs || '';
+  form.uploadTimeoutMs.value = account.uploadTimeoutMs || '';
+  form.taskTimeoutMs.value = account.taskTimeoutMs || '';
+  form.maxRetries.value = account.maxRetries ?? '';
+  form.isActive.checked = Boolean(account.isActive);
+  el.accountDetailSummary.innerHTML = accountDetailSummary(account);
+}
+
+function accountFormBody() {
+  const form = new FormData(el.accountForm);
+  const body = Object.fromEntries(form);
+  body.isActive = form.get('isActive') === 'on';
+  body.maxConcurrent = Number(body.maxConcurrent || 2);
+  body.generationLimit = Number(body.generationLimit || 80);
+  body.proxyId = body.proxyId || null;
+  body.teamId = body.teamId ? Number(body.teamId) : null;
+  for (const key of ['requestTimeoutMs', 'uploadTimeoutMs', 'taskTimeoutMs', 'maxRetries']) {
+    if (body[key] === '') delete body[key];
+    else body[key] = Number(body[key]);
   }
+  if (!body.authorization) delete body.authorization;
+  if (!body.cookie) delete body.cookie;
+  return body;
+}
+
+function withoutSecrets(account) {
+  const { jwt, cookieHeader, ...safe } = account;
+  return safe;
+}
+
+function accountDetailSummary(account) {
+  const rows = [
+    ['账号ID', account.id],
+    ['本地生成', `${account.generationUsed || 0}/${account.generationLimit || 80}，剩余 ${account.generationRemaining ?? '-'}`],
+    ['Runway额度', creditSummaryText(account.runwayCredits)],
+    ['额度查询', account.runwayCreditsCheckedAt ? formatDate(account.runwayCreditsCheckedAt) : '未查询'],
+    ['凭证', `JWT ${account.hasJwt ? '有' : '无'} / Cookie ${account.hasCookie ? '有' : '无'}`],
+    ['最近错误', account.lastError || '-']
+  ];
+  return rows.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join('');
+}
+
+function renderCreditSummary(account) {
+  const text = creditSummaryText(account.runwayCredits);
+  const checked = account.runwayCreditsCheckedAt ? formatDate(account.runwayCreditsCheckedAt) : '未查询';
+  return `<span>${escapeHtml(text)}</span><small>${escapeHtml(checked)}</small>`;
+}
+
+function creditSummaryText(credits = null) {
+  if (!credits) return '未查询';
+  const remaining = credits.remainingCredits ?? null;
+  const used = credits.usedCredits ?? null;
+  const plan = credits.planCredits ?? null;
+  if (remaining != null && used != null) return `剩余 ${remaining} / 已用 ${used}`;
+  if (remaining != null) return `剩余 ${remaining}`;
+  if (plan != null) return `套餐 ${plan}`;
+  return '已查询，未返回明确额度';
+}
+
+function formatProxyStrategy(strategy) {
+  return {
+    fixed: '固定代理',
+    per_request: '每次轮换',
+    on_failure: '失败切换'
+  }[strategy] || '固定代理';
 }
 
 async function refreshProxies() {
@@ -723,22 +825,6 @@ function formatStatus(status) {
     cancelled: '已取消',
     unknown: '未知'
   }[status] || status || '-';
-}
-
-function formatRunwayCredits(credits = {}) {
-  const lines = [
-    `查询时间：${formatDate(credits.queriedAt)}`,
-    `套餐 Credits：${credits.planCredits ?? '未返回'}`,
-    `每月重置：${credits.planCreditsResetMonthly == null ? '未返回' : (credits.planCreditsResetMonthly ? '是' : '否')}`,
-    `折扣比例：${credits.creditDiscountPercent ?? '未返回'}`,
-    `剩余 Credits：${credits.remainingCredits ?? 'Runway 响应未提供明确字段'}`,
-    `已用 Credits：${credits.usedCredits ?? 'Runway 响应未提供明确字段'}`
-  ];
-  const extra = Object.entries(credits.creditFields || {})
-    .slice(0, 12)
-    .map(([key, value]) => `${key}: ${value}`);
-  if (extra.length) lines.push('', '识别到的额度相关字段：', ...extra);
-  return lines.join('\n');
 }
 
 function maskProxyUrl(url) {

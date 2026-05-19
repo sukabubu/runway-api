@@ -223,6 +223,52 @@
       </form>
     </dialog>
 
+    <dialog id="accountDialog" class="wide-dialog">
+      <form id="accountForm" method="dialog" class="dialog-form">
+        <div class="panel-head">
+          <h2>账号详情</h2>
+          <button type="button" data-close-dialog>关闭</button>
+        </div>
+        <input name="id" type="hidden">
+        <div class="detail-summary" id="accountDetailSummary"></div>
+        <div class="form-grid two">
+          <label>账号名称<input name="name" required></label>
+          <label>备注<input name="remark"></label>
+          <label>并发上限<input name="maxConcurrent" type="number" min="1"></label>
+          <label>生成上限<input name="generationLimit" type="number" min="1"></label>
+          <label>绑定代理<select name="proxyId" id="accountProxySelect"><option value="">不绑定/自动</option></select></label>
+          <label>代理策略
+            <select name="proxyStrategy">
+              <option value="fixed">固定代理</option>
+              <option value="per_request">每次轮换</option>
+              <option value="on_failure">失败切换</option>
+            </select>
+          </label>
+        </div>
+        <label>Authorization<textarea name="authorization" rows="4" placeholder="Bearer eyJ... 或完整 Authorization 请求头"></textarea></label>
+        <label>Cookie<textarea name="cookie" rows="4" placeholder="可粘贴完整 Cookie 请求头"></textarea></label>
+        <div class="form-grid two">
+          <label>teamId<input name="teamId"></label>
+          <label>assetGroupId<input name="assetGroupId"></label>
+          <label>clientId<input name="clientId"></label>
+          <label>sourceVersion<input name="sourceVersion"></label>
+          <label>请求超时 ms<input name="requestTimeoutMs" type="number" min="1000" placeholder="默认"></label>
+          <label>上传超时 ms<input name="uploadTimeoutMs" type="number" min="1000" placeholder="默认"></label>
+          <label>任务超时 ms<input name="taskTimeoutMs" type="number" min="1000" placeholder="默认"></label>
+          <label>最大重试<input name="maxRetries" type="number" min="0" placeholder="默认"></label>
+        </div>
+        <label class="inline"><input name="isActive" type="checkbox"> 启用账号</label>
+        <div class="dialog-actions">
+          <button class="primary" type="submit">保存修改</button>
+          <button type="button" data-account-query-credits>查询Runway额度</button>
+          <button type="button" data-account-refresh-jwt>刷新JWT</button>
+          <button type="button" data-account-open-login>网页登录</button>
+          <button type="button" data-account-reset-quota>重置生成数</button>
+          <button type="button" data-account-delete>删除账号</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="logDialog">
       <div class="dialog-form">
         <div class="panel-head">

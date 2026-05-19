@@ -192,6 +192,7 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
     if (!account) return reply.code(404).send({ error: 'account not found' });
     if (!(account.jwt || account.cookieHeader)) return reply.code(409).send({ error: 'account credentials not ready', message: '账号凭证未就绪，请先网页登录或手动粘贴 Cookie/Authorization' });
     const credits = await runway.getAccountCredits(account);
+    db.updateAccountCredits?.(account.id, credits);
     return { account: hideSecret(db.getAccount(account.id)), credits };
   });
 
@@ -243,9 +244,17 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
       requestTimeoutMs: account.requestTimeoutMs,
       uploadTimeoutMs: account.uploadTimeoutMs,
       taskTimeoutMs: account.taskTimeoutMs,
-      maxRetries: account.maxRetries
+      maxRetries: account.maxRetries,
+      runwayCredits: account.runwayCredits,
+      runwayCreditsCheckedAt: account.runwayCreditsCheckedAt
     }))
   }));
+
+  app.get('/api/accounts/:id', async (request, reply) => {
+    const account = db.getAccount(request.params.id, { includeSecret: true });
+    if (!account) return reply.code(404).send({ error: 'account not found' });
+    return { account };
+  });
 
   app.get('/api/proxies', async () => ({ proxies: db.listProxies(), summary: db.getProxySummary() }));
 
