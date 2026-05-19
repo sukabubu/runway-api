@@ -90,6 +90,8 @@ curl -H "Authorization: Bearer change-me" \
 - 建议只在内网或 HTTPS 后台中导入导出
 - 服务器备份时注意保护 `data/runway-api.sqlite`
 
+导入支持导出的 `{ "accounts": [...] }` 格式，也支持账号数组、单个账号对象、`authorization` / `cookie` / `team_id` / `asset_group_id` 等常见字段名。导入完成后后台会提示成功和失败条数；如果某条账号格式不对，会显示具体第几条失败。
+
 ## 生产提示
 
 第一阶段建议单机部署，一个主 worker 进程配 SQLite。SQLite 队列已经有 lease、过期锁恢复、卡死任务恢复和任务超时保护。

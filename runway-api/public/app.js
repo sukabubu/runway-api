@@ -218,12 +218,12 @@ el.exportProxies.addEventListener('click', async () => {
 });
 
 el.importProxies.addEventListener('change', async () => {
-  const file = el.importProxies.files[0];
-  if (!file) return;
-  const data = JSON.parse(await file.text());
-  await fetchJson('/api/proxies/import', jsonOptions('POST', data));
-  el.importProxies.value = '';
-  await refreshProxies();
+  await importJsonFile({
+    input: el.importProxies,
+    endpoint: '/api/proxies/import',
+    label: '代理',
+    refresh: async () => refreshProxies()
+  });
 });
 
 el.exportAccounts.addEventListener('click', async () => {
@@ -232,12 +232,12 @@ el.exportAccounts.addEventListener('click', async () => {
 });
 
 el.importAccounts.addEventListener('change', async () => {
-  const file = el.importAccounts.files[0];
-  if (!file) return;
-  const data = JSON.parse(await file.text());
-  await fetchJson('/api/accounts/import', jsonOptions('POST', data));
-  el.importAccounts.value = '';
-  await refreshAccounts();
+  await importJsonFile({
+    input: el.importAccounts,
+    endpoint: '/api/accounts/import',
+    label: '账号',
+    refresh: async () => refreshAccounts()
+  });
 });
 
 el.taskForm.addEventListener('submit', async (event) => {
@@ -771,6 +771,29 @@ async function clearLogs() {
   await refreshLogs();
 }
 
+async function importJsonFile({ input, endpoint, label, refresh }) {
+  const file = input.files[0];
+  if (!file) return;
+  try {
+    let data;
+    try {
+      data = JSON.parse(await file.text());
+    } catch {
+      throw new Error('JSON 文件格式不正确，请检查文件内容。');
+    }
+    const result = await fetchJson(endpoint, jsonOptions('POST', data));
+    await refresh();
+    const imported = result.imported ?? result.accounts?.length ?? result.proxies?.length ?? 0;
+    const skipped = result.skipped ?? 0;
+    const errors = (result.errors || []).map((item) => `第 ${Number(item.index) + 1} 条：${item.message}`).join('\n');
+    alert(`${label}导入完成：成功 ${imported} 条${skipped ? `，失败 ${skipped} 条` : ''}${errors ? `\n\n失败详情：\n${errors}` : ''}`);
+  } catch (err) {
+    alert(`${label}导入失败：${err.message}`);
+  } finally {
+    input.value = '';
+  }
+}
+
 function jsonOptions(method, body) {
   return {
     method,
@@ -840,6 +863,8 @@ function translateError(message, status) {
   if (message === 'proxy url is required') return '请填写代理地址。';
   if (message === 'invalid proxy format' || message === 'invalid proxy url') return '代理格式不正确。';
   if (message === 'unsupported proxy protocol') return '不支持的代理协议。';
+  if (message === 'accounts array or account object is required') return '导入文件里没有找到账号列表或账号对象。';
+  if (message === 'proxies array or proxy object is required') return '导入文件里没有找到代理列表或代理对象。';
   if (message === 'prompt is required') return '请填写提示词。';
   return message || `请求失败：${status}`;
 }

@@ -378,6 +378,14 @@ while True:
 
 注意：`/api/accounts/export` 导出的 JSON 包含 `jwt` 和 `cookieHeader`，不要提交到 Git。
 
+`POST /api/accounts/import` 支持以下 JSON 结构：
+
+```json
+{ "accounts": [{ "name": "账号1", "jwt": "...", "cookieHeader": "...", "teamId": 1, "assetGroupId": "..." }] }
+```
+
+也支持直接传数组、`{ "account": {...} }` 或单个账号对象。字段兼容 `authorization`、`cookie`、`team_id`、`asset_group_id`、`sourceVersion`、嵌套 `credentials` 等常见格式；重复 `id` 会自动生成新账号 ID。返回值会包含 `imported`、`skipped` 和逐条 `errors`，方便定位导入失败原因。
+
 ## 10. 最小调用流程
 
 1. 确保后台已有至少一个 `ready: true` 的 Runway 账号。

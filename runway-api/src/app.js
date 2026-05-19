@@ -206,22 +206,28 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
   });
 
   app.post('/api/accounts/import', async (request) => {
-    const input = Array.isArray(request.body) ? request.body : request.body?.accounts;
-    if (!Array.isArray(input)) {
-      const err = new Error('accounts array is required');
+    const input = extractImportItems(request.body, 'accounts', 'account');
+    if (!input) {
+      const err = new Error('accounts array or account object is required');
       err.statusCode = 400;
       throw err;
     }
     const imported = [];
-    for (const item of input) {
-      const account = db.createAccount({
-        ...item,
-        id: item.id && !db.getAccount(item.id) ? item.id : randomUUID(),
-        sourceApplicationVersion: item.sourceVersion || item.sourceApplicationVersion
-      });
-      imported.push(hideSecret(account));
+    const errors = [];
+    for (const [index, item] of input.entries()) {
+      try {
+        const account = db.createAccount(normalizeImportedAccount(item, index, db));
+        imported.push(hideSecret(account));
+        db.logRequest({ accountId: account.id, operation: 'account_import', status: 'success', message: '导入账号成功' });
+      } catch (err) {
+        errors.push({
+          index,
+          name: item && typeof item === 'object' ? item.name || item.accountName || item.id || null : null,
+          message: err.message || '导入失败'
+        });
+      }
     }
-    return { accounts: imported };
+    return { accounts: imported, imported: imported.length, skipped: errors.length, errors };
   });
 
   app.get('/api/accounts/export', async () => ({
@@ -301,13 +307,26 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
   });
 
   app.post('/api/proxies/import', async (request) => {
-    const input = Array.isArray(request.body) ? request.body : request.body?.proxies;
-    if (!Array.isArray(input)) {
-      const err = new Error('proxies array is required');
+    const input = extractImportItems(request.body, 'proxies', 'proxy');
+    if (!input) {
+      const err = new Error('proxies array or proxy object is required');
       err.statusCode = 400;
       throw err;
     }
-    return { proxies: input.map((item) => db.createProxy(item)) };
+    const proxies = [];
+    const errors = [];
+    for (const [index, item] of input.entries()) {
+      try {
+        proxies.push(db.createProxy(normalizeImportedProxy(item, index, db)));
+      } catch (err) {
+        errors.push({
+          index,
+          name: item && typeof item === 'object' ? item.name || item.id || item.url || null : String(item || ''),
+          message: err.message || '导入失败'
+        });
+      }
+    }
+    return { proxies, imported: proxies.length, skipped: errors.length, errors };
   });
 
   app.get('/api/proxies/export', async () => ({ proxies: db.listProxies() }));
@@ -506,6 +525,114 @@ function normalizeAccountPatch(body) {
   if (body.authorization || body.jwt) patch.jwt = normalizeBearerToken(body.authorization || body.jwt);
   if (body.cookieHeader || body.cookie) patch.cookieHeader = normalizeCookieHeader(body.cookieHeader || body.cookie);
   return patch;
+}
+
+function extractImportItems(body, pluralKey, singularKey) {
+  const value = parseImportBody(body);
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== 'object') return null;
+  if (Array.isArray(value[pluralKey])) return value[pluralKey];
+  if (Array.isArray(value.data?.[pluralKey])) return value.data[pluralKey];
+  if (value[singularKey] && typeof value[singularKey] === 'object') return [value[singularKey]];
+  if (singularKey === 'account' && looksLikeAccount(value)) return [value];
+  if (singularKey === 'proxy' && looksLikeProxy(value)) return [value];
+  return null;
+}
+
+function parseImportBody(body) {
+  if (typeof body !== 'string') return body;
+  try {
+    return JSON.parse(body);
+  } catch {
+    return body;
+  }
+}
+
+function normalizeImportedAccount(item, index, db) {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) {
+    const err = new Error(`第 ${index + 1} 条账号不是有效对象`);
+    err.statusCode = 400;
+    throw err;
+  }
+  const credentials = item.credentials && typeof item.credentials === 'object' ? item.credentials : {};
+  const duplicateId = item.id && db.getAccount(item.id);
+  const runwayCredits = item.runwayCredits ?? item.runway_credits ?? item.credits ?? null;
+  return {
+    ...item,
+    id: item.id && !duplicateId ? item.id : randomUUID(),
+    name: item.name || item.accountName || item.displayName || (duplicateId ? `${duplicateId.name}（导入）` : '导入账号'),
+    remark: item.remark ?? item.note ?? item.description ?? null,
+    jwt: normalizeBearerToken(pickFirst(item, credentials, ['authorization', 'auth', 'jwt', 'bearer', 'accessToken', 'access_token', 'token'])),
+    cookieHeader: normalizeCookieHeader(pickFirst(item, credentials, ['cookieHeader', 'cookie_header', 'cookie', 'cookies'])),
+    teamId: pickFirst(item, credentials, ['teamId', 'team_id', 'team']),
+    assetGroupId: pickFirst(item, credentials, ['assetGroupId', 'asset_group_id', 'assetGroup']),
+    clientId: pickFirst(item, credentials, ['clientId', 'client_id', 'client']),
+    sourceApplicationVersion: pickFirst(item, credentials, [
+      'sourceApplicationVersion',
+      'source_application_version',
+      'sourceVersion',
+      'source_version',
+      'runwaySourceVersion'
+    ]),
+    isActive: pickFirst(item, credentials, ['isActive', 'is_active', 'enabled', 'active']) ?? 1,
+    maxConcurrent: pickFirst(item, credentials, ['maxConcurrent', 'max_concurrent', 'concurrency']),
+    proxyId: pickFirst(item, credentials, ['proxyId', 'proxy_id']) || null,
+    proxyStrategy: pickFirst(item, credentials, ['proxyStrategy', 'proxy_strategy']),
+    generationLimit: pickFirst(item, credentials, ['generationLimit', 'generation_limit', 'limit']),
+    generationUsed: pickFirst(item, credentials, ['generationUsed', 'generation_used', 'used']),
+    requestTimeoutMs: pickFirst(item, credentials, ['requestTimeoutMs', 'request_timeout_ms']),
+    uploadTimeoutMs: pickFirst(item, credentials, ['uploadTimeoutMs', 'upload_timeout_ms']),
+    taskTimeoutMs: pickFirst(item, credentials, ['taskTimeoutMs', 'task_timeout_ms']),
+    maxRetries: pickFirst(item, credentials, ['maxRetries', 'max_retries']),
+    runwayCreditsJson: runwayCredits
+      ? (typeof runwayCredits === 'string' ? runwayCredits : JSON.stringify(runwayCredits))
+      : item.runwayCreditsJson ?? item.runway_credits_json ?? null,
+    runwayCreditsCheckedAt: item.runwayCreditsCheckedAt ?? item.runway_credits_checked_at ?? null
+  };
+}
+
+function normalizeImportedProxy(item, index, db) {
+  if (typeof item === 'string') {
+    return { url: item };
+  }
+  if (!item || typeof item !== 'object' || Array.isArray(item)) {
+    const err = new Error(`第 ${index + 1} 条代理不是有效对象`);
+    err.statusCode = 400;
+    throw err;
+  }
+  return {
+    ...item,
+    id: item.id && !db.getProxy(item.id) ? item.id : randomUUID(),
+    url: item.url || item.proxy || item.value || item.address,
+    name: item.name || item.label
+  };
+}
+
+function pickFirst(primary, secondary, keys) {
+  for (const key of keys) {
+    if (primary[key] !== undefined && primary[key] !== '') return primary[key];
+    if (secondary[key] !== undefined && secondary[key] !== '') return secondary[key];
+  }
+  return undefined;
+}
+
+function looksLikeAccount(value) {
+  return [
+    'jwt',
+    'authorization',
+    'cookie',
+    'cookieHeader',
+    'teamId',
+    'team_id',
+    'assetGroupId',
+    'asset_group_id',
+    'clientId',
+    'credentials'
+  ].some((key) => Object.prototype.hasOwnProperty.call(value, key));
+}
+
+function looksLikeProxy(value) {
+  return ['url', 'proxy', 'value', 'address'].some((key) => Object.prototype.hasOwnProperty.call(value, key));
 }
 
 function hideSecret(account) {

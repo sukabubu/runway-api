@@ -1,5 +1,9 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { buildApp } from '../src/app.js';
+import { RunwayDatabase } from '../src/db.js';
 
 describe('app frontend and auth', () => {
   it('serves the Chinese admin console, exposes models, and protects task routes', async () => {
@@ -100,6 +104,88 @@ describe('account admin API', () => {
     expect(credits.statusCode).toBe(200);
     expect(JSON.parse(credits.body).credits).toMatchObject({ remainingCredits: 12, usedCredits: 3 });
     expect(updateAccountCredits).toHaveBeenCalledWith('account-1', expect.objectContaining({ remainingCredits: 12 }));
+
+    await app.close();
+  });
+
+  it('imports exported, single-object, duplicate-id, and partially invalid account files', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-app-test-'));
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'), { adminUsername: 'admin', adminPassword: 'admin', internalApiKey: 'secret' });
+    const existing = db.createAccount({
+      id: 'same-id',
+      name: '已有账号',
+      jwt: 'old',
+      teamId: 1,
+      assetGroupId: 'old-asset'
+    });
+    const app = await buildApp({
+      config: { internalApiKey: 'secret', uploadDir: path.join(dir, 'uploads') },
+      db,
+      browser: {
+        status: () => ({ started: false, pages: 0, headless: true }),
+        close: async () => {}
+      },
+      worker: {
+        start: () => {},
+        stop: async () => {}
+      },
+      logger: false
+    });
+
+    const single = await app.inject({
+      method: 'POST',
+      url: '/api/accounts/import',
+      headers: { authorization: 'Bearer secret' },
+      payload: {
+        id: existing.id,
+        name: '导入账号',
+        authorization: 'Authorization: Bearer new-jwt',
+        cookie: 'Cookie: session=abc',
+        team_id: 2,
+        asset_group_id: 'asset-2',
+        client_id: 'client-2',
+        sourceVersion: 'web-version'
+      }
+    });
+    expect(single.statusCode).toBe(200);
+    const singleBody = JSON.parse(single.body);
+    expect(singleBody.imported).toBe(1);
+    expect(singleBody.accounts[0]).toMatchObject({
+      name: '导入账号',
+      hasJwt: true,
+      hasCookie: true,
+      teamId: 2,
+      assetGroupId: 'asset-2',
+      clientId: 'client-2',
+      sourceApplicationVersion: 'web-version'
+    });
+    expect(singleBody.accounts[0].id).not.toBe(existing.id);
+
+    const mixed = await app.inject({
+      method: 'POST',
+      url: '/api/accounts/import',
+      headers: { authorization: 'Bearer secret' },
+      payload: {
+        accounts: [
+          {
+            accountName: '嵌套凭证',
+            credentials: {
+              jwt: 'nested-jwt',
+              cookieHeader: 'a=b',
+              teamId: 3,
+              assetGroupId: 'asset-3'
+            }
+          },
+          'not-an-account'
+        ]
+      }
+    });
+    expect(mixed.statusCode).toBe(200);
+    const mixedBody = JSON.parse(mixed.body);
+    expect(mixedBody.imported).toBe(1);
+    expect(mixedBody.skipped).toBe(1);
+    expect(mixedBody.errors[0].message).toContain('不是有效对象');
+    expect(db.listAccounts()).toHaveLength(3);
 
     await app.close();
   });
