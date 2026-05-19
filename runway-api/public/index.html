@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Runway API 管理后台</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <section id="loginView" class="login-view hidden">
+      <form id="loginForm" class="login-panel">
+        <h1>Runway API 管理后台</h1>
+        <label>管理员账号<input name="username" autocomplete="username" value="admin"></label>
+        <label>管理员密码<input name="password" type="password" autocomplete="current-password" value="admin"></label>
+        <button class="primary" type="submit">登录</button>
+        <p id="loginError" class="error-text"></p>
+      </form>
+    </section>
+
+    <main id="appView" class="shell hidden">
+      <header class="topbar">
+        <div>
+          <h1>Runway API 管理后台</h1>
+          <p id="summary">正在加载系统状态...</p>
+        </div>
+        <div class="top-actions">
+          <button id="refreshAll" type="button">刷新</button>
+          <button id="logout" type="button">退出</button>
+        </div>
+      </header>
+
+      <section class="stats">
+        <article><span>账号总数</span><strong id="statTotal">-</strong></article>
+        <article><span>启用账号</span><strong id="statActive">-</strong></article>
+        <article><span>凭证完整</span><strong id="statReady">-</strong></article>
+        <article><span>运行中</span><strong id="statInflight">-</strong></article>
+        <article><span>排队任务</span><strong id="statPending">-</strong></article>
+        <article><span>本地剩余生成数</span><strong id="statQuota">-</strong></article>
+        <article><span>启用代理</span><strong id="statProxies">-</strong></article>
+      </section>
+
+      <nav class="tabs" aria-label="后台导航">
+        <button class="active" type="button" data-tab="accounts">账号管理</button>
+        <button type="button" data-tab="tasks">任务队列</button>
+        <button type="button" data-tab="proxies">代理池</button>
+        <button type="button" data-tab="settings">系统配置</button>
+        <button type="button" data-tab="logs">请求日志</button>
+      </nav>
+
+      <section id="tab-accounts" class="tab-panel active">
+        <div class="panel-head">
+          <h2>账号管理</h2>
+          <div class="toolbar">
+            <button id="addBrowserAccount" type="button">新增网页登录</button>
+            <button id="showManual" type="button">手动添加</button>
+            <button id="exportAccounts" type="button">导出 JSON</button>
+            <label class="file-button">导入 JSON<input id="importAccounts" type="file" accept="application/json"></label>
+          </div>
+        </div>
+        <div id="accounts" class="table"></div>
+      </section>
+
+      <section id="tab-tasks" class="tab-panel">
+        <div class="task-layout">
+          <form id="taskForm" class="panel">
+            <div class="panel-head">
+              <h2>新建任务</h2>
+              <span id="submitState"></span>
+            </div>
+            <label class="full">提示词<textarea name="prompt" rows="5" required placeholder="描述你想生成的视频内容"></textarea></label>
+            <div class="form-grid">
+              <label>账号<select name="accountId" id="accountSelect"><option value="auto">自动负载</option></select></label>
+              <label>模型<select name="model" id="modelSelect"></select></label>
+              <label>时长<select name="duration" id="durationSelect"></select></label>
+              <label>分辨率<select name="resolution" id="resolutionSelect"></select></label>
+              <label>画面比例<select name="aspectRatio" id="aspectSelect"></select></label>
+            </div>
+            <div class="toggles">
+              <label><input type="checkbox" name="generateAudio" checked> 生成音轨</label>
+              <label><input type="checkbox" name="exploreMode" checked> 探索模式</label>
+            </div>
+            <label class="full">参考素材<input name="media" type="file" accept="image/*,video/*" multiple></label>
+            <button class="primary" type="submit">提交任务</button>
+            <p id="modelError" class="error-text"></p>
+          </form>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>任务队列</h2>
+              <div class="toolbar">
+                <select id="statusFilter" aria-label="状态筛选">
+                  <option value="">全部状态</option>
+                  <option value="pending">待提交</option>
+                  <option value="submitting">提交中</option>
+                  <option value="queuing">排队中</option>
+                  <option value="generating">生成中</option>
+                  <option value="completed">已完成</option>
+                  <option value="failed">失败</option>
+                  <option value="cancelled">已取消</option>
+                </select>
+                <button id="refreshTasks" type="button">刷新</button>
+              </div>
+            </div>
+            <div id="tasks" class="table"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="tab-proxies" class="tab-panel">
+        <div class="panel-head">
+          <h2>代理池</h2>
+          <div class="toolbar">
+            <button id="showProxyDialog" type="button">新增代理</button>
+            <button id="exportProxies" type="button">导出 JSON</button>
+            <label class="file-button">导入 JSON<input id="importProxies" type="file" accept="application/json"></label>
+          </div>
+        </div>
+        <div id="proxies" class="table"></div>
+      </section>
+
+      <section id="tab-settings" class="tab-panel">
+        <form id="configForm" class="panel narrow">
+          <div class="panel-head"><h2>系统配置</h2><span id="configState"></span></div>
+          <label>管理员账号<input name="username" autocomplete="off"></label>
+          <label>管理员密码<input name="password" type="password" autocomplete="new-password" placeholder="留空则不修改"></label>
+          <label>业务 API Key<input name="apiKey" autocomplete="off"></label>
+          <button class="primary" type="submit">保存配置</button>
+        </form>
+        <form id="runtimeForm" class="panel runtime-panel">
+          <div class="panel-head"><h2>Runway 运行配置</h2><span id="runtimeState"></span></div>
+          <div class="form-grid four">
+            <label>请求超时 ms<input name="requestTimeoutMs" type="number" min="1000"></label>
+            <label>上传最小超时 ms<input name="uploadTimeoutMinMs" type="number" min="1000"></label>
+            <label>上传最大超时 ms<input name="uploadTimeoutMaxMs" type="number" min="1000"></label>
+            <label>任务超时 ms<input name="taskTimeoutMs" type="number" min="1000"></label>
+            <label>最大重试次数<input name="maxRetries" type="number" min="0"></label>
+            <label>默认生成上限<input name="defaultGenerationLimit" type="number" min="1"></label>
+            <label>队列锁超时 ms<input name="queueLeaseTimeoutMs" type="number" min="1000"></label>
+            <label>任务卡死超时 ms<input name="staleTaskTimeoutMs" type="number" min="1000"></label>
+            <label>日志保留天数<input name="logRetentionDays" type="number" min="0"></label>
+            <label>上传文件保留天数<input name="uploadRetentionDays" type="number" min="0"></label>
+            <label>重试退避 ms<input name="retryBackoffMs" placeholder="1000,3000,7000"></label>
+            <label>默认代理策略
+              <select name="proxyStrategyDefault">
+                <option value="fixed">固定代理</option>
+                <option value="per_request">每次轮换</option>
+                <option value="on_failure">失败切换</option>
+              </select>
+            </label>
+          </div>
+          <div class="toggles">
+            <label><input type="checkbox" name="forceProxy"> 强制使用代理</label>
+            <label><input type="checkbox" name="logRequestBody"> 记录请求体</label>
+            <label><input type="checkbox" name="logResponseBody"> 记录响应体</label>
+            <label><input type="checkbox" name="maskSecrets"> 日志脱敏</label>
+          </div>
+          <button class="primary" type="submit">保存运行配置</button>
+        </form>
+      </section>
+
+      <section id="tab-logs" class="tab-panel">
+        <div class="panel-head">
+          <h2>请求日志</h2>
+          <div class="toolbar">
+            <button id="clearLogs" type="button">清空日志</button>
+            <button id="refreshLogs" type="button">刷新</button>
+          </div>
+        </div>
+        <div id="logs" class="table"></div>
+      </section>
+    </main>
+
+    <dialog id="manualDialog">
+      <form id="manualForm" method="dialog" class="dialog-form">
+        <div class="panel-head">
+          <h2>手动添加账号</h2>
+          <button type="button" data-close-dialog>关闭</button>
+        </div>
+        <div class="form-grid two">
+          <label>账号名称<input name="name" required value="手动账号"></label>
+          <label>并发上限<input name="maxConcurrent" type="number" min="1" value="2"></label>
+          <label>生成上限<input name="generationLimit" type="number" min="1" value="80"></label>
+          <label>代理策略
+            <select name="proxyStrategy">
+              <option value="fixed">固定代理</option>
+              <option value="per_request">每次轮换</option>
+              <option value="on_failure">失败切换</option>
+            </select>
+          </label>
+        </div>
+        <label>绑定代理<select name="proxyId" id="manualProxySelect"><option value="">不绑定</option></select></label>
+        <label>备注<input name="remark"></label>
+        <label>Authorization<textarea name="authorization" rows="4" required placeholder="Bearer eyJ... 或完整的 Authorization: Bearer eyJ..."></textarea></label>
+        <label>Cookie<textarea name="cookie" rows="4" placeholder="可粘贴完整 Cookie: ... 请求头"></textarea></label>
+        <div class="form-grid two">
+          <label>teamId<input name="teamId" required></label>
+          <label>assetGroupId<input name="assetGroupId" required></label>
+          <label>clientId<input name="clientId"></label>
+          <label>sourceVersion<input name="sourceVersion"></label>
+          <label>请求超时 ms<input name="requestTimeoutMs" type="number" min="1000" placeholder="默认"></label>
+          <label>上传超时 ms<input name="uploadTimeoutMs" type="number" min="1000" placeholder="默认"></label>
+          <label>任务超时 ms<input name="taskTimeoutMs" type="number" min="1000" placeholder="默认"></label>
+          <label>最大重试<input name="maxRetries" type="number" min="0" placeholder="默认"></label>
+        </div>
+        <label class="inline"><input name="isActive" type="checkbox" checked> 启用账号</label>
+        <button class="primary" type="submit">保存账号</button>
+      </form>
+    </dialog>
+
+    <dialog id="proxyDialog">
+      <form id="proxyForm" method="dialog" class="dialog-form">
+        <div class="panel-head">
+          <h2>代理配置</h2>
+          <button type="button" data-close-dialog>关闭</button>
+        </div>
+        <input name="id" type="hidden">
+        <div class="form-grid two">
+          <label>代理名称<input name="name" required placeholder="香港 01"></label>
+          <label class="inline"><input name="isActive" type="checkbox" checked> 启用代理</label>
+        </div>
+        <label>代理地址<input name="url" required placeholder="http://user:pass@host:port / host:port:user:pass / st5 host:port:user:pass"></label>
+        <button class="primary" type="submit">保存代理</button>
+      </form>
+    </dialog>
+
+    <dialog id="logDialog">
+      <div class="dialog-form">
+        <div class="panel-head">
+          <h2>日志详情</h2>
+          <button type="button" data-close-dialog>关闭</button>
+        </div>
+        <pre id="logDetail" class="log-detail"></pre>
+      </div>
+    </dialog>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
