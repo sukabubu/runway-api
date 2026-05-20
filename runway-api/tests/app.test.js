@@ -237,7 +237,7 @@ describe('OpenAI compatible video API', () => {
       headers: { authorization: 'Bearer secret' },
       payload: {
         model: 'seedance_2',
-        input: 'a calm product video',
+        prompt: 'a calm product video',
         duration: 5,
         resolution: '480p',
         aspectRatio: '16:9'
@@ -333,7 +333,7 @@ describe('OpenAI compatible video API', () => {
       headers: { authorization: 'Bearer secret' },
       payload: {
         model: 'seedance_2',
-        input: 'use url reference',
+        prompt: 'use url reference',
         media_urls: [mediaUrl]
       }
     });
@@ -392,7 +392,7 @@ describe('OpenAI compatible video API', () => {
       headers: { authorization: 'Bearer secret' },
       payload: {
         model: 'seedance_2',
-        input: 'Use @主体 as the main subject',
+        prompt: 'Use @主体 as the main subject',
         references: [{ name: '主体', url: mediaUrl }]
       }
     });

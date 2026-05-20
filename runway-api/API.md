@@ -59,7 +59,7 @@ curl http://127.0.0.1:8790/v1/models
 
 ```json
 {
-  "input": "使用 @主体 作为主体外观，使用 @动作 作为运动参考",
+  "prompt": "使用 @主体 作为主体外观，使用 @动作 作为运动参考",
   "references": [
     { "name": "主体", "url": "https://example.com/subject.jpg" },
     { "name": "动作", "url": "https://example.com/motion.mp4" }
@@ -82,7 +82,7 @@ curl -X POST http://127.0.0.1:8790/v1/videos \
   -H "Content-Type: application/json" \
   -d '{
     "model": "seedance_2",
-    "input": "a cinematic shot of waves at sunset, handheld camera, realistic lighting",
+    "prompt": "a cinematic shot of waves at sunset, handheld camera, realistic lighting",
     "duration": 5,
     "resolution": "720p",
     "aspectRatio": "16:9",
@@ -101,7 +101,7 @@ curl -X POST http://127.0.0.1:8790/v1/videos \
 curl -X POST http://127.0.0.1:8790/v1/videos \
   -H "Authorization: Bearer change-me" \
   -F "model=seedance_2" \
-  -F "input=animate this reference with a slow dolly-in camera move" \
+  -F "prompt=animate this reference with a slow dolly-in camera move" \
   -F "duration=5" \
   -F "resolution=720p" \
   -F "aspectRatio=16:9" \
@@ -419,7 +419,7 @@ const baseUrl = 'http://127.0.0.1:8790';
 const apiKey = 'change-me';
 
 const form = new FormData();
-form.set('input', 'a cinematic product shot with slow camera movement');
+form.set('prompt', 'a cinematic product shot with slow camera movement');
 form.set('model', 'seedance_2');
 form.set('duration', '5');
 form.set('resolution', '720p');
@@ -475,7 +475,7 @@ with open("/absolute/path/to/reference.mp4", "rb") as f:
         f"{BASE_URL}/v1/videos",
         headers=headers,
         data={
-            "input": "continue the motion and keep the same subject identity",
+            "prompt": "continue the motion and keep the same subject identity",
             "model": "seedance_2",
             "duration": "5",
             "resolution": "720p",
