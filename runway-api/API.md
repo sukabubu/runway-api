@@ -55,6 +55,20 @@ curl http://127.0.0.1:8790/v1/models
 
 文生视频可以直接传 JSON。参考素材优先传 URL，字段支持 `media_urls`、`mediaUrls`、`reference_urls`、`referenceUrls`，可以是数组、逗号分隔或换行分隔字符串。
 
+如果你想按 Runway 网页习惯在提示词里写 `@素材名`，用 `references` 传带名字的素材：
+
+```json
+{
+  "input": "使用 @主体 作为主体外观，使用 @动作 作为运动参考",
+  "references": [
+    { "name": "主体", "url": "https://example.com/subject.jpg" },
+    { "name": "动作", "url": "https://example.com/motion.mp4" }
+  ]
+}
+```
+
+说明：服务端会用 `name` 作为素材文件名下载并上传，prompt 里的 `@主体` 会原样提交给 Runway；真正的引用对象仍然通过上传后的 `referenceImages` / `referenceVideos` 传给 Runway。
+
 URL 素材要求：
 
 - 只支持 `http` / `https`

@@ -555,12 +555,39 @@ async function readTaskRequest(request, uploadDir) {
 
 function extractReferenceUrls(input = {}) {
   return [
+    ...normalizeReferenceObjects(input.references),
+    ...normalizeReferenceObjects(input.referenceAssets ?? input.reference_assets),
     ...normalizeUrlList(input.mediaUrls ?? input.media_urls),
     ...normalizeUrlList(input.referenceUrls ?? input.reference_urls),
     ...normalizeUrlList(input.referenceUrl ?? input.reference_url),
     ...normalizeUrlList(input.imageUrls ?? input.image_urls),
     ...normalizeUrlList(input.videoUrls ?? input.video_urls)
   ];
+}
+
+function normalizeReferenceObjects(value) {
+  if (!value) return [];
+  const references = typeof value === 'string' ? parseReferenceJson(value) : value;
+  if (!Array.isArray(references)) return [];
+  return references
+    .map((item) => {
+      if (typeof item === 'string') return item;
+      const url = item?.url || item?.uri || item?.src;
+      if (!url) return null;
+      return {
+        url,
+        name: item.name || item.label || item.id || null
+      };
+    })
+    .filter(Boolean);
+}
+
+function parseReferenceJson(value) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return normalizeUrlList(value);
+  }
 }
 
 function normalizeUrlList(value) {
@@ -583,7 +610,8 @@ async function downloadReferenceUrls(urls, uploadDir) {
 }
 
 async function downloadReferenceUrl(url, uploadDir) {
-  const parsed = parseReferenceUrl(url);
+  const reference = typeof url === 'object' ? url : { url };
+  const parsed = parseReferenceUrl(reference.url);
   const id = randomUUID();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 120000);
@@ -614,7 +642,7 @@ async function downloadReferenceUrl(url, uploadDir) {
     throw err;
   }
   const mimeType = normalizeMimeType(response.headers.get('content-type')) || inferMimeTypeFromUrl(parsed) || 'application/octet-stream';
-  const filename = filenameFromUrlOrHeaders(parsed, response.headers, mimeType, id);
+  const filename = filenameFromUrlOrHeaders(parsed, response.headers, mimeType, id, reference.name);
   const mediaType = classifyUpload(mimeType, filename);
   if (!mediaType) {
     const err = new Error('only image and video reference urls are supported');
@@ -676,12 +704,12 @@ function inferMimeTypeFromUrl(url) {
   }[ext] || null;
 }
 
-function filenameFromUrlOrHeaders(url, headers, mimeType, fallbackId) {
+function filenameFromUrlOrHeaders(url, headers, mimeType, fallbackId, preferredName = null) {
   const disposition = headers.get('content-disposition') || '';
   const match = disposition.match(/filename\*?=(?:UTF-8''|")?([^";]+)/i);
   const fromHeader = match ? decodeURIComponent(match[1].replace(/^"|"$/g, '')) : null;
   const fromUrl = path.basename(decodeURIComponent(url.pathname || ''));
-  const base = fromHeader || fromUrl || `reference-${fallbackId}${extensionForMimeType(mimeType)}`;
+  const base = preferredName || fromHeader || fromUrl || `reference-${fallbackId}${extensionForMimeType(mimeType)}`;
   return sanitizeFilename(base.includes('.') ? base : `${base}${extensionForMimeType(mimeType)}`);
 }
 
@@ -999,7 +1027,7 @@ function normalizeCookieHeader(value) {
 
 function sanitizeFilename(filename) {
   const base = path.basename(filename);
-  return base.replace(/[^A-Za-z0-9._-]/g, '_') || 'upload.bin';
+  return base.replace(/[^\p{L}\p{N}._-]/gu, '_') || 'upload.bin';
 }
 
 function classifyUpload(mimeType, filename) {

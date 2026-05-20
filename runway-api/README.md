@@ -72,7 +72,19 @@ curl -X POST http://127.0.0.1:8790/v1/videos \
   -d '{"model":"seedance_2","input":"a cinematic shot of waves at sunset","duration":5,"resolution":"720p","aspectRatio":"16:9","media_urls":["https://example.com/reference.jpg"]}'
 ```
 
-参考素材优先传 URL：`media_urls` / `mediaUrls` / `reference_urls` / `referenceUrls` 都支持。必须上传本地文件时仍然可以用 `multipart/form-data`：
+参考素材优先传 URL：`media_urls` / `mediaUrls` / `reference_urls` / `referenceUrls` 都支持。如果要模仿 Runway 网页的 `@素材名` 写法，可以传：
+
+```json
+{
+  "input": "使用 @主体 作为主体外观，使用 @动作 作为运动参考",
+  "references": [
+    { "name": "主体", "url": "https://example.com/subject.jpg" },
+    { "name": "动作", "url": "https://example.com/motion.mp4" }
+  ]
+}
+```
+
+必须上传本地文件时仍然可以用 `multipart/form-data`：
 
 ```bash
 curl -X POST http://127.0.0.1:8790/v1/videos \

@@ -356,4 +356,60 @@ describe('OpenAI compatible video API', () => {
     await app.close();
     await new Promise((resolve) => mediaServer.close(resolve));
   });
+
+  it('accepts named references for @ prompt usage', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-at-ref-test-'));
+    const uploadDir = path.join(dir, 'uploads');
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'), { internalApiKey: 'secret' });
+    const mediaServer = http.createServer((request, response) => {
+      if (request.url === '/cat.png') {
+        response.writeHead(200, { 'Content-Type': 'image/png' });
+        response.end(Buffer.from('89504e470d0a1a0a', 'hex'));
+        return;
+      }
+      response.writeHead(404);
+      response.end();
+    });
+    await new Promise((resolve) => mediaServer.listen(0, '127.0.0.1', resolve));
+    const mediaUrl = `http://127.0.0.1:${mediaServer.address().port}/cat.png`;
+    const app = await buildApp({
+      config: { internalApiKey: 'secret', uploadDir },
+      db,
+      browser: {
+        status: () => ({ started: false, pages: 0, headless: true }),
+        close: async () => {}
+      },
+      worker: {
+        start: () => {},
+        stop: async () => {}
+      },
+      logger: false
+    });
+
+    const created = await app.inject({
+      method: 'POST',
+      url: '/v1/videos',
+      headers: { authorization: 'Bearer secret' },
+      payload: {
+        model: 'seedance_2',
+        input: 'Use @主体 as the main subject',
+        references: [{ name: '主体', url: mediaUrl }]
+      }
+    });
+    expect(created.statusCode).toBe(202);
+    const task = JSON.parse(created.body);
+    const assets = JSON.parse((await app.inject({
+      method: 'GET',
+      url: `/v1/videos/${task.id}`,
+      headers: { authorization: 'Bearer secret' }
+    })).body).metadata.assets;
+    expect(assets[0]).toMatchObject({
+      filename: '主体.png',
+      mime_type: 'image/png',
+      media_type: 'image'
+    });
+
+    await app.close();
+    await new Promise((resolve) => mediaServer.close(resolve));
+  });
 });
