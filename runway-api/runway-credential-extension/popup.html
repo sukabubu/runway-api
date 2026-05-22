@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Runway API 凭证导入</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Runway API 凭证导入</h1>
+        <span id="readyBadge">未就绪</span>
+      </header>
+
+      <section class="status">
+        <div><span>JWT</span><strong id="jwtState">-</strong></div>
+        <div><span>Cookie</span><strong id="cookieState">-</strong></div>
+        <div><span>teamId</span><strong id="teamState">-</strong></div>
+        <div><span>assetGroupId</span><strong id="assetState">-</strong></div>
+      </section>
+
+      <section class="form">
+        <label>项目服务器地址
+          <input id="serverUrl" placeholder="http://127.0.0.1:8790">
+        </label>
+        <label>INTERNAL_API_KEY
+          <input id="apiKey" type="password" placeholder="后台 API Key">
+        </label>
+      </section>
+
+      <div class="actions">
+        <button id="refresh">刷新状态</button>
+        <button id="copy">复制 JSON</button>
+        <button id="clear">清空</button>
+        <button id="import" class="primary">直接导入</button>
+      </div>
+
+      <pre id="output"></pre>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

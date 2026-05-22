@@ -118,6 +118,24 @@ curl -H "Authorization: Bearer change-me" \
 
 导入支持导出的 `{ "accounts": [...] }` 格式，也支持账号数组、单个账号对象、`authorization` / `cookie` / `team_id` / `asset_group_id` 等常见字段名。导入完成后后台会提示成功和失败条数；如果某条账号格式不对，会显示具体第几条失败。
 
+## Chrome 插件直接导入
+
+仓库内置本地自用插件：`runway-credential-extension/`。它会监听你浏览器里的 `api.runwayml.com` 请求，抓取 `Authorization`、`Cookie`、`teamId`、`assetGroupId`、`clientId` 和 source version，然后直接导入到你的 runway-api 服务器。
+
+安装方式：
+
+1. Chrome 打开 `chrome://extensions/`
+2. 开启“开发者模式”
+3. 点击“加载已解压的扩展程序”
+4. 选择 `runway-credential-extension/`
+5. 打开并登录 Runway，进入生成页或刷新页面
+6. 点击插件图标，填写项目服务器地址和 `INTERNAL_API_KEY`
+7. 点击“直接导入”
+
+服务端接口是 `POST /api/plugin/accounts/import`，需要 `Authorization: Bearer <INTERNAL_API_KEY>`。插件只在你点击“直接导入”时发送凭证；也可以点击“复制 JSON”走后台手动导入。
+
+如果在 Codex 内嵌的自动化 Chrome 里测试，可能会看到“扩展程序已加载”但列表没有卡片。那通常是浏览器进程带了 `--disable-extensions` 启动参数，扩展被 Chrome 直接禁用；请用你正常打开的 Chrome 安装插件。部署到服务器时，本地插件仍然可以用：服务器地址填你的 HTTPS 域名，本地调试填 `http://127.0.0.1:8790`。
+
 ## 生产提示
 
 第一阶段建议单机部署，一个主 worker 进程配 SQLite。SQLite 队列已经有 lease、过期锁恢复、卡死任务恢复和任务超时保护。

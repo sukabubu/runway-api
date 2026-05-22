@@ -549,6 +549,10 @@ while True:
 
 也支持直接传数组、`{ "account": {...} }` 或单个账号对象。字段兼容 `authorization`、`cookie`、`team_id`、`asset_group_id`、`sourceVersion`、嵌套 `credentials` 等常见格式；重复 `id` 会自动生成新账号 ID。返回值会包含 `imported`、`skipped` 和逐条 `errors`，方便定位导入失败原因。
 
+### `POST /api/plugin/accounts/import`
+
+Chrome 插件专用导入接口，鉴权仍然使用 `Authorization: Bearer <INTERNAL_API_KEY>`，请求体和 `/api/accounts/import` 相同。该接口允许插件跨域调用，便于从本机浏览器直接导入到部署服务器。
+
 ## 12. 最小调用流程
 
 1. 确保后台已有至少一个 `ready: true` 的 Runway 账号。

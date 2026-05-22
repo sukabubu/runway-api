@@ -21,6 +21,10 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
 
   app.addHook('preHandler', async (request, reply) => {
     const pathname = request.url.split('?')[0];
+    if (pathname.startsWith('/api/')) setExtensionCorsHeaders(reply);
+    if (request.method === 'OPTIONS' && pathname.startsWith('/api/')) {
+      return reply.code(204).send();
+    }
     if (isPublicRoute(pathname)) return;
     if (pathname.startsWith('/api/') || pathname.startsWith('/auth/') || pathname.startsWith('/admin/') || (pathname.startsWith('/v1/') && pathname !== '/v1/models')) {
       if (hasAdminSession(request) || hasApiKey(request)) return;
@@ -35,6 +39,7 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
   app.get('/', async (request, reply) => servePublic(reply, 'index.html', 'text/html; charset=utf-8'));
   app.get('/app.js', async (request, reply) => servePublic(reply, 'app.js', 'text/javascript; charset=utf-8'));
   app.get('/styles.css', async (request, reply) => servePublic(reply, 'styles.css', 'text/css; charset=utf-8'));
+  app.options('/api/*', async (request, reply) => reply.code(204).send());
 
   app.get('/health', async () => ({
     ok: true,
@@ -211,27 +216,12 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
 
   app.post('/api/accounts/import', async (request) => {
     const input = extractImportItems(request.body, 'accounts', 'account');
-    if (!input) {
-      const err = new Error('accounts array or account object is required');
-      err.statusCode = 400;
-      throw err;
-    }
-    const imported = [];
-    const errors = [];
-    for (const [index, item] of input.entries()) {
-      try {
-        const account = db.createAccount(normalizeImportedAccount(item, index, db));
-        imported.push(hideSecret(account));
-        db.logRequest({ accountId: account.id, operation: 'account_import', status: 'success', message: '导入账号成功' });
-      } catch (err) {
-        errors.push({
-          index,
-          name: item && typeof item === 'object' ? item.name || item.accountName || item.id || null : null,
-          message: err.message || '导入失败'
-        });
-      }
-    }
-    return { accounts: imported, imported: imported.length, skipped: errors.length, errors };
+    return importAccounts({ db, input, operation: 'account_import' });
+  });
+
+  app.post('/api/plugin/accounts/import', async (request) => {
+    const input = extractImportItems(request.body, 'accounts', 'account');
+    return importAccounts({ db, input, operation: 'plugin_account_import' });
   });
 
   app.get('/api/accounts/export', async () => ({
@@ -817,6 +807,30 @@ function createRetryTask({ db, original }) {
   return retry;
 }
 
+function importAccounts({ db, input, operation = 'account_import' }) {
+  if (!input) {
+    const err = new Error('accounts array or account object is required');
+    err.statusCode = 400;
+    throw err;
+  }
+  const imported = [];
+  const errors = [];
+  for (const [index, item] of input.entries()) {
+    try {
+      const account = db.createAccount(normalizeImportedAccount(item, index, db));
+      imported.push(hideSecret(account));
+      db.logRequest({ accountId: account.id, operation, status: 'success', message: '导入账号成功' });
+    } catch (err) {
+      errors.push({
+        index,
+        name: item && typeof item === 'object' ? item.name || item.accountName || item.id || null : null,
+        message: err.message || '导入失败'
+      });
+    }
+  }
+  return { accounts: imported, imported: imported.length, skipped: errors.length, errors };
+}
+
 async function cancelTask({ db, runway, id }) {
   const task = db.getTask(id);
   if (!task) return null;
@@ -981,6 +995,12 @@ function toV1Error(code, message) {
       code
     }
   };
+}
+
+function setExtensionCorsHeaders(reply) {
+  reply.header('Access-Control-Allow-Origin', '*');
+  reply.header('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  reply.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
 }
 
 function extractImportItems(body, pluralKey, singularKey) {

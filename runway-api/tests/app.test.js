@@ -201,6 +201,64 @@ describe('account admin API', () => {
 
     await app.close();
   });
+
+  it('imports accounts from the browser extension endpoint', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-extension-import-test-'));
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'), { internalApiKey: 'secret' });
+    const app = await buildApp({
+      config: { internalApiKey: 'secret', uploadDir: path.join(dir, 'uploads') },
+      db,
+      browser: {
+        status: () => ({ started: false, pages: 0, headless: true }),
+        close: async () => {}
+      },
+      worker: {
+        start: () => {},
+        stop: async () => {}
+      },
+      logger: false
+    });
+
+    const unauthorized = await app.inject({
+      method: 'POST',
+      url: '/api/plugin/accounts/import',
+      payload: { accounts: [] }
+    });
+    expect(unauthorized.statusCode).toBe(401);
+
+    const imported = await app.inject({
+      method: 'POST',
+      url: '/api/plugin/accounts/import',
+      headers: {
+        authorization: 'Bearer secret',
+        origin: 'chrome-extension://extension-id'
+      },
+      payload: {
+        accounts: [{
+          name: '插件账号',
+          authorization: 'Bearer plugin-jwt',
+          cookieHeader: 'session=plugin',
+          teamId: 9,
+          assetGroupId: 'asset-plugin',
+          clientId: 'client-plugin',
+          sourceApplicationVersion: 'source-plugin'
+        }]
+      }
+    });
+    expect(imported.statusCode).toBe(200);
+    expect(imported.headers['access-control-allow-origin']).toBe('*');
+    const body = JSON.parse(imported.body);
+    expect(body.imported).toBe(1);
+    expect(body.accounts[0]).toMatchObject({
+      name: '插件账号',
+      hasJwt: true,
+      hasCookie: true,
+      teamId: 9,
+      assetGroupId: 'asset-plugin'
+    });
+
+    await app.close();
+  });
 });
 
 describe('OpenAI compatible video API', () => {

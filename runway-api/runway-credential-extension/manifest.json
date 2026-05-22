@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Runway API Credential Importer",
+  "version": "0.1.0",
+  "description": "Capture Runway web credentials and import them into a private runway-api server.",
+  "permissions": [
+    "storage",
+    "cookies",
+    "webRequest"
+  ],
+  "host_permissions": [
+    "https://app.runwayml.com/*",
+    "https://api.runwayml.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Runway API 凭证导入",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  }
+}
