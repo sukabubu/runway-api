@@ -67,8 +67,10 @@ export class TaskWorker {
       const assignedTask = this.db.updateTask(task.id, { status: 'submitting', accountId: account.id });
       this.queue.heartbeat(task.id);
       await this.respectSubmitGap();
+      if (this.isCancelled(task.id)) return this.queue.release(task.id);
       const uploadedAssets = [];
       for (const asset of assignedTask.assets) {
+        if (this.isCancelled(task.id)) return this.queue.release(task.id);
         if (asset.runwayAssetId && asset.runwayUrl) {
           uploadedAssets.push(asset);
           continue;
@@ -90,7 +92,9 @@ export class TaskWorker {
         });
       }
       this.queue.heartbeat(task.id);
+      if (this.isCancelled(task.id)) return this.queue.release(task.id);
       const submission = await this.runway.submitTask(assignedTask, uploadedAssets, { account });
+      if (this.isCancelled(task.id)) return this.queue.release(task.id);
       this.lastSubmitAt = Date.now();
       this.db.incrementGenerationUsed?.(account.id);
       this.db.markAccountSuccess?.(account.id);
@@ -187,5 +191,9 @@ export class TaskWorker {
     const targetGap = min + Math.floor(Math.random() * Math.max(max - min, 1));
     const elapsed = Date.now() - this.lastSubmitAt;
     if (this.lastSubmitAt && elapsed < targetGap) await delay(targetGap - elapsed);
+  }
+
+  isCancelled(taskId) {
+    return this.db.getTask(taskId)?.status === 'cancelled';
   }
 }

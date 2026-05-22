@@ -59,4 +59,16 @@ describe('RunwayClient', () => {
       previewUrl: null
     }]);
   });
+
+  it('calls Runway task cancel endpoint', async () => {
+    const db = {
+      getCredentials: () => ({ jwt: 'jwt' }),
+      getRuntimeConfig: () => ({ requestTimeoutMs: 120000, maxRetries: 0, retryBackoffMs: [] })
+    };
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ task: { id: 'runway-task', status: 'CANCELED' } })));
+    const client = new RunwayClient({ db, fetchImpl });
+    await expect(client.cancelTask('runway-task')).resolves.toMatchObject({ ok: true });
+    expect(fetchImpl.mock.calls[0][0]).toBe('https://api.runwayml.com/v1/tasks/runway-task/cancel');
+    expect(fetchImpl.mock.calls[0][1].method).toBe('POST');
+  });
 });

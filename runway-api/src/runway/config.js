@@ -9,6 +9,7 @@ export const RUNWAY_ENDPOINTS = {
   datasets: '/v1/datasets',
   tasks: '/v1/tasks',
   task: (taskId) => `/v1/tasks/${taskId}`,
+  taskCancel: (taskId) => `/v1/tasks/${taskId}/cancel`,
   canStart: '/v1/tasks/can_start',
   estimateCost: '/v1/billing/estimate_feature_cost_credits'
 };

@@ -74,13 +74,15 @@ describe('RunwayDatabase', () => {
   it('applies generation limits and can reset usage', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-test-'));
     const db = new RunwayDatabase(path.join(dir, 'test.sqlite'));
+    const today = new Date().toISOString();
     const full = db.createAccount({
       name: 'full',
       jwt: 'jwt-a',
       teamId: 1,
       assetGroupId: 'asset-a',
       generationLimit: 1,
-      generationUsed: 1
+      generationUsed: 1,
+      generationResetAt: today
     });
     const available = db.createAccount({
       name: 'available',
@@ -93,6 +95,30 @@ describe('RunwayDatabase', () => {
     expect(db.selectLeastLoadedAccount().id).toBe(available.id);
     db.resetAccountGenerationUsage(full.id);
     expect(db.selectLeastLoadedAccount().id).toBe(full.id);
+    db.close();
+  });
+
+  it('automatically resets generation usage on a new Shanghai calendar day', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-test-'));
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'));
+    const now = new Date();
+    const tomorrow = new Date(now.getTime() + 36 * 60 * 60 * 1000);
+    const account = db.createAccount({
+      name: 'daily',
+      jwt: 'jwt-a',
+      teamId: 1,
+      assetGroupId: 'asset-a',
+      generationLimit: 1,
+      generationUsed: 1,
+      generationResetAt: now.toISOString()
+    });
+
+    expect(db.selectLeastLoadedAccount()).toBeNull();
+    db.resetExpiredGenerationUsage(account.id, tomorrow);
+    const reset = db.getAccount(account.id);
+    expect(reset.generationUsed).toBe(0);
+    expect(reset.generationResetAt).toBe(tomorrow.toISOString());
+    expect(db.selectLeastLoadedAccount().id).toBe(account.id);
     db.close();
   });
 

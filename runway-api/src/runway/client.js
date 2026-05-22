@@ -377,6 +377,33 @@ export class RunwayClient {
     return parseRunwayTaskResponse(resp);
   }
 
+  async cancelTask(runwayTaskId, opts = {}) {
+    const attempts = [
+      ['POST', RUNWAY_ENDPOINTS.taskCancel(runwayTaskId), {}],
+      ['DELETE', RUNWAY_ENDPOINTS.task(runwayTaskId), null],
+      ['PATCH', RUNWAY_ENDPOINTS.task(runwayTaskId), { status: 'CANCELED' }]
+    ];
+    let lastError;
+    for (const [method, endpoint, body] of attempts) {
+      try {
+        const resp = await this.call(method, endpoint, body, {
+          ...opts,
+          operation: opts.operation || 'runway:cancel',
+          maxRetries: 0
+        });
+        return {
+          ok: true,
+          rawResponse: resp
+        };
+      } catch (err) {
+        lastError = err;
+        if (err.code === 'AUTH_FAILED') throw err;
+        if (![404, 405].includes(Number(err.status || err.statusCode))) throw err;
+      }
+    }
+    throw lastError;
+  }
+
   async getAccountCredits(account) {
     const featuresResp = await this.call('GET', RUNWAY_ENDPOINTS.profileFeatures, null, {
       account,

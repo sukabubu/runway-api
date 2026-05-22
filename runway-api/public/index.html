@@ -135,7 +135,7 @@
             <label>上传最大超时 ms<input name="uploadTimeoutMaxMs" type="number" min="1000"></label>
             <label>任务超时 ms<input name="taskTimeoutMs" type="number" min="1000"></label>
             <label>最大重试次数<input name="maxRetries" type="number" min="0"></label>
-            <label>默认生成上限<input name="defaultGenerationLimit" type="number" min="1"></label>
+            <label>默认每日生成上限<input name="defaultGenerationLimit" type="number" min="1"></label>
             <label>队列锁超时 ms<input name="queueLeaseTimeoutMs" type="number" min="1000"></label>
             <label>任务卡死超时 ms<input name="staleTaskTimeoutMs" type="number" min="1000"></label>
             <label>日志保留天数<input name="logRetentionDays" type="number" min="0"></label>
@@ -180,7 +180,7 @@
         <div class="form-grid two">
           <label>账号名称<input name="name" required value="手动账号"></label>
           <label>并发上限<input name="maxConcurrent" type="number" min="1" value="2"></label>
-          <label>生成上限<input name="generationLimit" type="number" min="1" value="80"></label>
+          <label>每日生成上限<input name="generationLimit" type="number" min="1" value="80"></label>
           <label>代理策略
             <select name="proxyStrategy">
               <option value="fixed">固定代理</option>
@@ -236,7 +236,7 @@
           <label>账号名称<input name="name" required></label>
           <label>备注<input name="remark"></label>
           <label>并发上限<input name="maxConcurrent" type="number" min="1"></label>
-          <label>生成上限<input name="generationLimit" type="number" min="1"></label>
+          <label>每日生成上限<input name="generationLimit" type="number" min="1"></label>
           <label>绑定代理<select name="proxyId" id="accountProxySelect"><option value="">不绑定/自动</option></select></label>
           <label>代理策略
             <select name="proxyStrategy">

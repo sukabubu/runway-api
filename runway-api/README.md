@@ -1,6 +1,6 @@
 # Runway API
 
-Runway-only 私有 API 服务。它把 Runway Web 的上传、提交、轮询流程封装成内部 HTTP API，并提供中文管理后台、多账号负载、代理池、本地生成上限、请求日志和任务队列。
+Runway-only 私有 API 服务。它把 Runway Web 的上传、提交、轮询流程封装成内部 HTTP API，并提供中文管理后台、多账号负载、代理池、每日生成上限、请求日志和任务队列。
 
 > 这不是 Runway 官方 API。服务复用你自己的 Runway Web 登录态、Cookie、JWT 和 Web 请求头，Runway 内部接口变化或账号风控都属于已知风险。
 
@@ -15,7 +15,7 @@ Runway-only 私有 API 服务。它把 Runway Web 的上传、提交、轮询流
 - Web 登录抓取凭证，或手动粘贴 `Authorization/Cookie/teamId/assetGroupId`
 - Cookie 有效时自动刷新 JWT
 - 每账号默认并发 `2`
-- 每账号本地生成数量上限，默认 `80`
+- 每账号每日生成数量上限，默认 `80`，按北京时间自然日自动刷新
 - 最少负载优先分发任务
 - 图片/视频参考上传
 - 异步任务队列，失败原因中文摘要
@@ -74,12 +74,14 @@ curl -X POST http://127.0.0.1:8790/v1/videos \
 
 参考素材优先传 URL：`media_urls` / `mediaUrls` / `reference_urls` / `referenceUrls` 都支持。如果要模仿 Runway 网页的 `@素材名` 写法，可以传：
 
+未手动命名的素材会按上传顺序自动命名：图片是 `IMG_1`、`IMG_2`，视频是 `VID_1`、`VID_2`。因此可以直接在提示词里写 `@IMG_1`、`@VID_1`；如果传了 `references[].name`，则优先使用你指定的名字。
+
 ```json
 {
-  "prompt": "使用 @主体 作为主体外观，使用 @动作 作为运动参考",
-  "references": [
-    { "name": "主体", "url": "https://example.com/subject.jpg" },
-    { "name": "动作", "url": "https://example.com/motion.mp4" }
+  "prompt": "使用 @IMG_1 作为主体外观，使用 @VID_1 作为运动参考",
+  "media_urls": [
+    "https://example.com/subject.jpg",
+    "https://example.com/motion.mp4"
   ]
 }
 ```

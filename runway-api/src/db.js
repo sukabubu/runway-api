@@ -522,6 +522,7 @@ export class RunwayDatabase {
   }
 
   listAccounts({ includeSecret = false } = {}) {
+    this.resetExpiredGenerationUsage();
     const rows = this.db.prepare(`
       SELECT accounts.*, proxies.name AS proxy_name, proxies.url AS proxy_url
       FROM accounts
@@ -532,6 +533,7 @@ export class RunwayDatabase {
   }
 
   getAccount(id, { includeSecret = false } = {}) {
+    this.resetExpiredGenerationUsage(id);
     const row = this.db.prepare(`
       SELECT accounts.*, proxies.name AS proxy_name, proxies.url AS proxy_url
       FROM accounts
@@ -636,8 +638,30 @@ export class RunwayDatabase {
     return result.changes ? this.getAccount(id) : null;
   }
 
+  resetExpiredGenerationUsage(id = null, now = new Date()) {
+    const resetAt = now instanceof Date ? now.toISOString() : new Date(now).toISOString();
+    const todayKey = quotaDayKey(resetAt);
+    const where = id ? 'id = @id AND' : '';
+    const initialized = this.db.prepare(`
+      UPDATE accounts
+      SET generation_reset_at = @resetAt, updated_at = @resetAt
+      WHERE ${where}
+        (generation_reset_at IS NULL OR generation_reset_at = '')
+    `).run({ id, resetAt });
+    const reset = this.db.prepare(`
+      UPDATE accounts
+      SET generation_used = 0, generation_reset_at = @resetAt, updated_at = @resetAt
+      WHERE ${where}
+        generation_reset_at IS NOT NULL
+        AND generation_reset_at != ''
+        AND (date(generation_reset_at, '+8 hours') IS NULL OR date(generation_reset_at, '+8 hours') < @todayKey)
+    `).run({ id, resetAt, todayKey });
+    return initialized.changes + reset.changes;
+  }
+
   incrementGenerationUsed(id) {
     if (!id) return null;
+    this.resetExpiredGenerationUsage(id);
     const now = new Date().toISOString();
     this.db.prepare(`
       UPDATE accounts SET generation_used = generation_used + 1, updated_at = @now
@@ -721,6 +745,7 @@ export class RunwayDatabase {
   }
 
   getFirstAccount({ includeSecret = false } = {}) {
+    this.resetExpiredGenerationUsage();
     const row = this.db.prepare(`
       SELECT accounts.*, proxies.name AS proxy_name, proxies.url AS proxy_url
       FROM accounts
@@ -738,6 +763,7 @@ export class RunwayDatabase {
   }
 
   getAccountSummary() {
+    this.resetExpiredGenerationUsage();
     const summary = this.db.prepare(`
       SELECT
         COUNT(*) AS total,
@@ -876,6 +902,7 @@ export class RunwayDatabase {
   }
 
   getReadyAccounts({ includeSecret = true } = {}) {
+    this.resetExpiredGenerationUsage();
     const rows = this.db.prepare(`
       SELECT accounts.*, proxies.name AS proxy_name, proxies.url AS proxy_url
       FROM accounts
@@ -894,6 +921,7 @@ export class RunwayDatabase {
   }
 
   selectLeastLoadedAccount({ preferredAccountId = null } = {}) {
+    this.resetExpiredGenerationUsage(preferredAccountId);
     const candidates = preferredAccountId
       ? [this.getAccount(preferredAccountId, { includeSecret: true })].filter(Boolean)
       : this.getReadyAccounts({ includeSecret: true });
@@ -1140,6 +1168,35 @@ export class RunwayDatabase {
       });
     }
     return this.getTask(id);
+  }
+
+  cancelTask(id, { reason = '用户取消任务', runwayResponse = null, runwayError = null } = {}) {
+    const task = this.getTask(id);
+    if (!task) return null;
+    if (TERMINAL_STATUSES.has(task.status)) return task;
+    const cancelled = this.updateTask(id, {
+      status: 'cancelled',
+      rawStatus: task.rawStatus || 'CANCELLED',
+      error: {
+        code: 'USER_CANCELLED',
+        message: reason,
+        runwayResponse,
+        runwayError
+      },
+      completedAt: new Date().toISOString()
+    });
+    this.clearTaskLease(id);
+    this.addTaskEvent(id, {
+      accountId: task.accountId,
+      type: 'cancelled',
+      message: reason,
+      data: {
+        runwayTaskId: task.runwayTaskId,
+        runwayResponse,
+        runwayError
+      }
+    });
+    return cancelled;
   }
 
   getTask(id) {
@@ -1625,6 +1682,10 @@ function normalizeOptionalNonNegativeInt(value) {
 function normalizeGenerationLimit(value) {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 80;
+}
+
+function quotaDayKey(value = new Date()) {
+  return new Date(value).toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
 }
 
 function normalizeBooleanFlag(value, fallback = 0) {

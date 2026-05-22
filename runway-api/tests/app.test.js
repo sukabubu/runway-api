@@ -295,6 +295,18 @@ describe('OpenAI compatible video API', () => {
     expect(alias.statusCode).toBe(200);
     expect(JSON.parse(alias.body)).toMatchObject({ id: body.id, object: 'video.generation' });
 
+    const cancelled = await app.inject({
+      method: 'POST',
+      url: `/v1/videos/${body.id}/cancel`,
+      headers: { authorization: 'Bearer secret' }
+    });
+    expect(cancelled.statusCode).toBe(200);
+    expect(JSON.parse(cancelled.body)).toMatchObject({
+      id: body.id,
+      status: 'cancelled',
+      error: { code: 'USER_CANCELLED' }
+    });
+
     await app.close();
   });
 
@@ -347,11 +359,68 @@ describe('OpenAI compatible video API', () => {
     const assets = JSON.parse(detail.body).metadata.assets;
     expect(assets).toHaveLength(1);
     expect(assets[0]).toMatchObject({
-      filename: 'reference.png',
+      filename: 'IMG_1.png',
       mime_type: 'image/png',
       media_type: 'image',
       size: 8
     });
+
+    await app.close();
+    await new Promise((resolve) => mediaServer.close(resolve));
+  });
+
+  it('assigns ordered Runway-style aliases to unnamed image and video references', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-ordered-ref-test-'));
+    const uploadDir = path.join(dir, 'uploads');
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'), { internalApiKey: 'secret' });
+    const mediaServer = http.createServer((request, response) => {
+      if (request.url === '/first.png' || request.url === '/second.png') {
+        response.writeHead(200, { 'Content-Type': 'image/png' });
+        response.end(Buffer.from('89504e470d0a1a0a', 'hex'));
+        return;
+      }
+      if (request.url === '/motion.mp4') {
+        response.writeHead(200, { 'Content-Type': 'video/mp4' });
+        response.end(Buffer.from('00000018667479706d703432', 'hex'));
+        return;
+      }
+      response.writeHead(404);
+      response.end();
+    });
+    await new Promise((resolve) => mediaServer.listen(0, '127.0.0.1', resolve));
+    const baseUrl = `http://127.0.0.1:${mediaServer.address().port}`;
+    const app = await buildApp({
+      config: { internalApiKey: 'secret', uploadDir },
+      db,
+      browser: {
+        status: () => ({ started: false, pages: 0, headless: true }),
+        close: async () => {}
+      },
+      worker: {
+        start: () => {},
+        stop: async () => {}
+      },
+      logger: false
+    });
+
+    const created = await app.inject({
+      method: 'POST',
+      url: '/v1/videos',
+      headers: { authorization: 'Bearer secret' },
+      payload: {
+        model: 'seedance_2',
+        prompt: 'Use @IMG_1 as subject, @IMG_2 as style, @VID_1 as motion',
+        media_urls: [`${baseUrl}/first.png`, `${baseUrl}/motion.mp4`, `${baseUrl}/second.png`]
+      }
+    });
+    expect(created.statusCode).toBe(202);
+    const task = JSON.parse(created.body);
+    const assets = JSON.parse((await app.inject({
+      method: 'GET',
+      url: `/v1/videos/${task.id}`,
+      headers: { authorization: 'Bearer secret' }
+    })).body).metadata.assets;
+    expect(assets.map((asset) => asset.filename)).toEqual(['IMG_1.png', 'VID_1.mp4', 'IMG_2.png']);
 
     await app.close();
     await new Promise((resolve) => mediaServer.close(resolve));

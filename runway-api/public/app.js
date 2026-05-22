@@ -427,7 +427,7 @@ function renderAccounts(accounts) {
         <div><strong>${escapeHtml(account.name)}</strong><small>${escapeHtml(account.remark || account.id)}</small></div>
         <span class="badge ${account.isActive ? 'completed' : 'failed'}">${account.isActive ? '启用' : '停用'}</span>
         <span>${account.inflight || 0}/${account.maxConcurrent || 2}</span>
-        <div><strong>${account.generationUsed || 0}/${account.generationLimit || 80}</strong><small>剩余 ${account.generationRemaining ?? '-'}</small></div>
+        <div><strong>${account.generationUsed || 0}/${account.generationLimit || 80}</strong><small>剩余 ${account.generationRemaining ?? '-'}</small><small>每日自动刷新${account.generationResetAt ? ` · ${formatDate(account.generationResetAt)}` : ''}</small></div>
         <div class="credit-cell">${renderCreditSummary(account)}</div>
         <div><span>${escapeHtml(account.proxyName || '不绑定/自动')}</span><small>${escapeHtml(formatProxyStrategy(account.proxyStrategy))}</small></div>
         <div class="credential-cell">
@@ -531,6 +531,7 @@ function accountDetailSummary(account) {
   const rows = [
     ['账号ID', account.id],
     ['本地生成', `${account.generationUsed || 0}/${account.generationLimit || 80}，剩余 ${account.generationRemaining ?? '-'}`],
+    ['生成刷新', `每日自动刷新${account.generationResetAt ? `，上次 ${formatDate(account.generationResetAt)}` : ''}`],
     ['Runway额度', creditSummaryText(account.runwayCredits)],
     ['额度查询', account.runwayCreditsCheckedAt ? formatDate(account.runwayCreditsCheckedAt) : '未查询'],
     ['凭证', `JWT ${account.hasJwt ? '有' : '无'} / Cookie ${account.hasCookie ? '有' : '无'}`],
@@ -666,13 +667,22 @@ function renderTasks(tasks) {
         <span class="badge ${escapeAttr(task.status)}">${escapeHtml(formatStatus(task.status))}</span>
         <span>${task.progress == null ? '-' : `${task.progress}%`}</span>
         ${renderTaskResult(task)}
-        <span class="row-actions">${task.status === 'failed' ? `<button type="button" data-retry="${escapeAttr(task.id)}">重试</button>` : ''}<button type="button" data-task-detail="${escapeAttr(task.id)}">详情</button></span>
+        <span class="row-actions">${canCancelTask(task) ? `<button type="button" data-cancel-task="${escapeAttr(task.id)}">取消</button>` : ''}${task.status === 'failed' ? `<button type="button" data-retry="${escapeAttr(task.id)}">重试</button>` : ''}<button type="button" data-task-detail="${escapeAttr(task.id)}">详情</button></span>
       </div>
     `).join('')}
   `;
   for (const button of $$('[data-retry]')) {
     button.addEventListener('click', async () => {
       await fetchJson(`/v1/videos/${button.dataset.retry}/retry`, { method: 'POST' });
+      await refreshTasks();
+    });
+  }
+  for (const button of $$('[data-cancel-task]')) {
+    button.addEventListener('click', async () => {
+      if (!confirm('确认取消这个任务？已提交到 Runway 的任务会尝试同步取消。')) return;
+      button.disabled = true;
+      button.textContent = '取消中';
+      await fetchJson(`/v1/videos/${button.dataset.cancelTask}/cancel`, { method: 'POST' });
       await refreshTasks();
     });
   }
@@ -684,6 +694,10 @@ function renderTasks(tasks) {
       el.logDialog.showModal();
     });
   }
+}
+
+function canCancelTask(task) {
+  return ['pending', 'submitting', 'queuing', 'generating'].includes(task.status);
 }
 
 function renderTaskResult(task) {

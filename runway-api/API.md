@@ -55,6 +55,18 @@ curl http://127.0.0.1:8790/v1/models
 
 文生视频可以直接传 JSON。参考素材优先传 URL，字段支持 `media_urls`、`mediaUrls`、`reference_urls`、`referenceUrls`，可以是数组、逗号分隔或换行分隔字符串。
 
+未手动命名的素材会按上传顺序自动命名：图片是 `IMG_1`、`IMG_2`，视频是 `VID_1`、`VID_2`。因此可以直接在提示词里写 `@IMG_1`、`@VID_1`；如果传了 `references[].name`，则优先使用你指定的名字。
+
+```json
+{
+  "prompt": "使用 @IMG_1 作为主体外观，使用 @VID_1 作为运动参考",
+  "media_urls": [
+    "https://example.com/subject.jpg",
+    "https://example.com/motion.mp4"
+  ]
+}
+```
+
 如果你想按 Runway 网页习惯在提示词里写 `@素材名`，用 `references` 传带名字的素材：
 
 ```json
@@ -157,6 +169,15 @@ curl -X POST -H "Authorization: Bearer change-me" \
 ```
 
 只能重试失败任务。
+
+### `POST /v1/videos/:id/cancel`
+
+```bash
+curl -X POST -H "Authorization: Bearer change-me" \
+  http://127.0.0.1:8790/v1/videos/<task-id>/cancel
+```
+
+可取消 `queued` / `in_progress` 任务。已提交到 Runway 的任务会尝试同步取消；如果 Runway 内部取消接口不可用，本地任务仍会标记为 `cancelled`，详情事件里会保留 Runway 取消失败原因。
 
 ## 2. 可用模型
 
@@ -512,11 +533,13 @@ while True:
 | `PUT` | `/api/accounts/:id` | 修改账号配置和凭证 |
 | `POST` | `/api/accounts/:id/refresh-jwt` | 用 Cookie 刷新 JWT |
 | `GET` | `/api/accounts/:id/runway-credits` | 查询并缓存 Runway 额度 |
-| `POST` | `/api/accounts/:id/reset-generation-usage` | 重置本地生成计数 |
+| `POST` | `/api/accounts/:id/reset-generation-usage` | 手动重置每日生成计数 |
 | `GET` | `/api/accounts/export` | 导出账号 JSON，包含敏感凭证 |
 | `POST` | `/api/accounts/import` | 导入账号 JSON |
 
 注意：`/api/accounts/export` 导出的 JSON 包含 `jwt` 和 `cookieHeader`，不要提交到 Git。
+
+账号的 `generationLimit` 是每日本地提交数量上限，默认 `80`。服务按北京时间自然日自动刷新 `generationUsed`，也可以通过 `reset-generation-usage` 手动清零；这个计数不等于 Runway 官方 credits。
 
 `POST /api/accounts/import` 支持以下 JSON 结构：
 

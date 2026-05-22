@@ -449,6 +449,12 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
     return reply.code(202).send({ id: retry.id, runwayTaskId: null, status: retry.status, accountId: retry.accountId });
   });
 
+  app.post('/tasks/:id/cancel', async (request, reply) => {
+    const task = await cancelTask({ db, runway, id: request.params.id });
+    if (!task) return reply.code(404).send({ error: 'task not found' });
+    return task;
+  });
+
   app.post('/v1/videos/generations/:id/retry', async (request, reply) => {
     const original = db.getTask(request.params.id);
     if (!original) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
@@ -458,6 +464,12 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
     return reply.code(202).send(toV1VideoGeneration(createRetryTask({ db, original })));
   });
 
+  app.post('/v1/videos/generations/:id/cancel', async (request, reply) => {
+    const task = await cancelTask({ db, runway, id: request.params.id });
+    if (!task) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
+    return toV1VideoGeneration(task);
+  });
+
   app.post('/v1/videos/:id/retry', async (request, reply) => {
     const original = db.getTask(request.params.id);
     if (!original) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
@@ -465,6 +477,12 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
       return reply.code(409).send(toV1Error('invalid_state', '只有失败任务可以重试。'));
     }
     return reply.code(202).send(toV1Video(createRetryTask({ db, original })));
+  });
+
+  app.post('/v1/videos/:id/cancel', async (request, reply) => {
+    const task = await cancelTask({ db, runway, id: request.params.id });
+    if (!task) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
+    return toV1Video(task);
   });
 
   app.setErrorHandler((err, request, reply) => {
@@ -536,7 +554,7 @@ async function readMultipartTask(request, uploadDir) {
     });
   }
   files.push(...await downloadReferenceUrls(extractReferenceUrls(fields), uploadDir));
-  return { fields, files };
+  return { fields, files: applyOrderedReferenceAliases(files) };
 }
 
 async function readTaskRequest(request, uploadDir) {
@@ -549,7 +567,7 @@ async function readTaskRequest(request, uploadDir) {
     prompt: body.prompt ?? body.input,
     accountId: body.accountId ?? body.account_id
   };
-  const files = await downloadReferenceUrls(extractReferenceUrls(body), uploadDir);
+  const files = applyOrderedReferenceAliases(await downloadReferenceUrls(extractReferenceUrls(body), uploadDir));
   return { fields, files };
 }
 
@@ -663,8 +681,30 @@ async function downloadReferenceUrl(url, uploadDir) {
     filename: sanitizeFilename(filename),
     mimeType,
     mediaType,
-    size: buffer.byteLength
+    size: buffer.byteLength,
+    explicitReferenceName: Boolean(reference.name)
   };
+}
+
+function applyOrderedReferenceAliases(files) {
+  let imageIndex = 1;
+  let videoIndex = 1;
+  return files.map((file) => {
+    if (file.explicitReferenceName) return file;
+    if (file.mediaType === 'image') {
+      return { ...file, filename: `IMG_${imageIndex++}${referenceExtension(file)}` };
+    }
+    if (file.mediaType === 'video') {
+      return { ...file, filename: `VID_${videoIndex++}${referenceExtension(file)}` };
+    }
+    return file;
+  });
+}
+
+function referenceExtension(file) {
+  const mimeExtension = extensionForMimeType(file.mimeType);
+  if (mimeExtension && mimeExtension !== '.bin') return mimeExtension;
+  return path.extname(file.filename || '') || '.bin';
 }
 
 function parseReferenceUrl(value) {
@@ -777,6 +817,49 @@ function createRetryTask({ db, original }) {
   return retry;
 }
 
+async function cancelTask({ db, runway, id }) {
+  const task = db.getTask(id);
+  if (!task) return null;
+  if (['completed', 'failed', 'cancelled'].includes(task.status)) return task;
+
+  let runwayResponse = null;
+  let runwayError = null;
+  if (task.runwayTaskId && task.accountId && runway?.cancelTask) {
+    const account = db.getAccount(task.accountId, { includeSecret: true });
+    if (account?.jwt || account?.cookieHeader) {
+      try {
+        runwayResponse = await runway.cancelTask(task.runwayTaskId, { account });
+        db.logRequest?.({
+          accountId: account.id,
+          operation: 'cancel',
+          status: 'success',
+          message: `cancelled ${task.runwayTaskId}`
+        });
+      } catch (err) {
+        runwayError = {
+          code: err.code || 'RUNWAY_CANCEL_FAILED',
+          message: err.message,
+          status: err.status || err.statusCode || null,
+          body: err.body || null
+        };
+        db.logRequest?.({
+          accountId: account.id,
+          operation: 'cancel',
+          status: 'failed',
+          statusCode: runwayError.status,
+          message: err.message
+        });
+      }
+    }
+  }
+
+  return db.cancelTask(id, {
+    reason: runwayError ? '本地已取消；Runway 取消请求失败，请到 Runway 后台确认任务状态' : '用户取消任务',
+    runwayResponse,
+    runwayError
+  });
+}
+
 function normalizeAccountPatch(body) {
   const patch = {
     name: body.name,
@@ -838,9 +921,9 @@ function toV1Video(task, object = 'video') {
     progress: task.progress,
     video_url: task.videoUrl,
     thumbnail_url: task.thumbnailUrl,
-    error: task.status === 'failed'
+    error: ['failed', 'cancelled'].includes(task.status)
       ? {
-          message: task.errorSummary || task.errorCode || '任务失败',
+          message: task.errorSummary || task.errorCode || (task.status === 'cancelled' ? '任务已取消' : '任务失败'),
           code: task.errorCode,
           category: task.errorCategory,
           detail: task.errorDetail || task.error
