@@ -136,6 +136,12 @@ curl -H "Authorization: Bearer change-me" \
 
 如果在 Codex 内嵌的自动化 Chrome 里测试，可能会看到“扩展程序已加载”但列表没有卡片。那通常是浏览器进程带了 `--disable-extensions` 启动参数，扩展被 Chrome 直接禁用；请用你正常打开的 Chrome 安装插件。部署到服务器时，本地插件仍然可以用：服务器地址填你的 HTTPS 域名，本地调试填 `http://127.0.0.1:8790`。
 
+如果 Chrome 提示加载成功但列表没有卡片，优先检查三点：
+
+1. 确认选择的是包含 `manifest.json` 的目录本身，而不是仓库根目录。
+2. 地址栏打开 `chrome://policy`，确认没有 `ExtensionInstallBlocklist` 或禁用开发者扩展的策略。
+3. 如果仍然不显示，把 `runway-credential-extension/` 复制到一个普通目录，例如桌面，再重新加载。插件默认只申请 Runway 和本地服务权限，远端服务器导入由服务端 CORS 支持，不需要申请所有网站权限。
+
 ## 生产提示
 
 第一阶段建议单机部署，一个主 worker 进程配 SQLite。SQLite 队列已经有 lease、过期锁恢复、卡死任务恢复和任务超时保护。

@@ -12,8 +12,7 @@
     "https://app.runwayml.com/*",
     "https://api.runwayml.com/*",
     "http://127.0.0.1/*",
-    "http://localhost/*",
-    "https://*/*"
+    "http://localhost/*"
   ],
   "background": {
     "service_worker": "background.js",
