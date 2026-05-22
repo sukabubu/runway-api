@@ -70,9 +70,18 @@ export function extractCredentialsFromJson(text) {
   try {
     const body = JSON.parse(text);
     const patch = {};
-    const assetGroupId = body?.options?.assetGroupId || body?.assetGroupId;
+    const assetGroupId = findFirstValue(body, [
+      'assetGroupId',
+      'asset_group_id',
+      'defaultAssetGroupId'
+    ]);
     if (assetGroupId) patch.assetGroupId = String(assetGroupId);
-    const teamId = Number(body?.asTeamId);
+    const teamId = Number(findFirstValue(body, [
+      'asTeamId',
+      'teamId',
+      'team_id',
+      'workspaceId'
+    ]));
     if (Number.isFinite(teamId) && teamId > 0) patch.teamId = teamId;
     return patch;
   } catch {
@@ -82,15 +91,33 @@ export function extractCredentialsFromJson(text) {
 
 export function extractCredentialsFromResponse({ url, text }) {
   const target = String(url || '');
-  if (!target.includes('/v1/asset_groups/by_name') && !target.includes('/v1/sessions')) return {};
   if (typeof text !== 'string' || !text.trim().startsWith('{')) return {};
   try {
     const body = JSON.parse(text);
-    const assetGroupId = body?.assetGroup?.id || body?.session?.assetGroupId || body?.assetGroupId || body?.id;
-    return assetGroupId ? { assetGroupId: String(assetGroupId) } : {};
+    const patch = {};
+    const assetGroupId = body?.assetGroup?.id ||
+      (target.includes('/v1/asset_groups') ? body?.id : null) ||
+      findFirstValue(body, ['assetGroupId', 'asset_group_id', 'defaultAssetGroupId']);
+    if (assetGroupId) patch.assetGroupId = String(assetGroupId);
+    const teamId = Number(findFirstValue(body, ['asTeamId', 'teamId', 'team_id', 'workspaceId']));
+    if (Number.isFinite(teamId) && teamId > 0) patch.teamId = teamId;
+    return patch;
   } catch {
     return {};
   }
+}
+
+function findFirstValue(value, keys, depth = 0) {
+  if (!value || typeof value !== 'object' || depth > 8) return null;
+  for (const key of keys) {
+    if (value[key] != null && value[key] !== '') return value[key];
+  }
+  for (const child of Object.values(value)) {
+    if (!child || typeof child !== 'object') continue;
+    const found = findFirstValue(child, keys, depth + 1);
+    if (found != null && found !== '') return found;
+  }
+  return null;
 }
 
 export function isUsableCredentialPatch(patch) {

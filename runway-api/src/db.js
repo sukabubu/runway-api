@@ -768,7 +768,7 @@ export class RunwayDatabase {
       SELECT
         COUNT(*) AS total,
         SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) AS active,
-        SUM(CASE WHEN is_active = 1 AND (jwt IS NOT NULL OR cookie_header IS NOT NULL) AND team_id IS NOT NULL AND asset_group_id IS NOT NULL THEN 1 ELSE 0 END) AS ready,
+        SUM(CASE WHEN is_active = 1 AND (jwt IS NOT NULL OR cookie_header IS NOT NULL) AND team_id IS NOT NULL THEN 1 ELSE 0 END) AS ready,
         SUM(CASE WHEN is_active = 1 AND inflight >= max_concurrent THEN 1 ELSE 0 END) AS full_concurrency,
         SUM(CASE WHEN is_active = 1 AND generation_used >= generation_limit THEN 1 ELSE 0 END) AS quota_exhausted,
         COALESCE(SUM(inflight), 0) AS inflight,
@@ -910,7 +910,6 @@ export class RunwayDatabase {
       WHERE accounts.is_active = 1
         AND (accounts.jwt IS NOT NULL OR accounts.cookie_header IS NOT NULL)
         AND accounts.team_id IS NOT NULL
-        AND accounts.asset_group_id IS NOT NULL
         AND accounts.generation_used < accounts.generation_limit
       ORDER BY (inflight + (
         SELECT COUNT(*) FROM tasks
@@ -946,7 +945,6 @@ export class RunwayDatabase {
         AND is_active = 1
         AND (jwt IS NOT NULL OR cookie_header IS NOT NULL)
         AND team_id IS NOT NULL
-        AND asset_group_id IS NOT NULL
         AND inflight < max_concurrent
         AND generation_used < generation_limit
     `).run({ id: account.id, now });
@@ -1739,7 +1737,6 @@ function isReadyAccount(account) {
     account?.isActive &&
     (account.jwt || account.cookieHeader) &&
     account.teamId &&
-    account.assetGroupId &&
     Number(account.generationUsed || 0) < Number(account.generationLimit || 0)
   );
 }
@@ -1759,7 +1756,7 @@ function accountToCredentialsRow(account) {
 
 function credentialStatus(row) {
   return {
-    ready: Boolean(row?.jwt && row?.team_id && row?.asset_group_id),
+    ready: Boolean(row?.jwt && row?.team_id),
     hasJwt: Boolean(row?.jwt),
     hasCookie: Boolean(row?.cookie_header),
     hasTeamId: Boolean(row?.team_id),
@@ -1814,7 +1811,7 @@ function hydrateAccount(row, { includeSecret = false } = {}) {
     capturedAt: row.captured_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    ready: Boolean(row.is_active && (row.jwt || row.cookie_header) && row.team_id && row.asset_group_id && generationUsed < generationLimit)
+    ready: Boolean(row.is_active && (row.jwt || row.cookie_header) && row.team_id && generationUsed < generationLimit)
   };
 }
 

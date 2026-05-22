@@ -37,5 +37,14 @@ describe('credential extraction', () => {
       url: 'https://api.runwayml.com/v1/asset_groups/by_name',
       text: JSON.stringify({ assetGroup: { id: 'from-response' } })
     })).toEqual({ assetGroupId: 'from-response' });
+    expect(extractCredentialsFromResponse({
+      url: 'https://api.runwayml.com/v1/some_bootstrap_payload',
+      text: JSON.stringify({
+        data: {
+          workspaceId: 66,
+          currentProject: { defaultAssetGroupId: 'nested-asset-group' }
+        }
+      })
+    })).toEqual({ assetGroupId: 'nested-asset-group', teamId: 66 });
   });
 });

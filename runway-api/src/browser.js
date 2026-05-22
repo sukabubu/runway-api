@@ -41,7 +41,9 @@ export class RunwayBrowser {
     let page = this.pages.get(account.id);
     page = page && !page.isClosed() ? page : await context.newPage();
     this.pages.set(account.id, page);
-    await page.goto('https://app.runwayml.com/', { waitUntil: 'domcontentloaded' });
+    await page.goto('https://app.runwayml.com/video-tools/teams/guest/ai-tools/generate?mode=apps', {
+      waitUntil: 'domcontentloaded'
+    });
     await page.bringToFront();
     return { opened: true, accountId: account.id, url: page.url() };
   }
@@ -84,7 +86,8 @@ export class RunwayBrowser {
     page.on('response', async (response) => {
       const url = response.url();
       if (!url.includes('api.runwayml.com')) return;
-      if (!url.includes('/v1/asset_groups/by_name') && !url.includes('/v1/sessions')) return;
+      const contentType = response.headers()['content-type'] || '';
+      if (!contentType.includes('application/json')) return;
       try {
         const patch = extractCredentialsFromResponse({ url, text: await response.text() });
         const cookieHeader = await this.cookieHeaderForAccount(accountId);

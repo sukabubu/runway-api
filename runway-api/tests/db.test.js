@@ -71,6 +71,20 @@ describe('RunwayDatabase', () => {
     db.close();
   });
 
+  it('treats assetGroupId as optional for ready accounts', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-test-'));
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'));
+    const account = db.createAccount({
+      name: 'without asset group',
+      jwt: 'jwt-a',
+      teamId: 1
+    });
+    expect(account.ready).toBe(true);
+    expect(db.getAccountSummary().ready).toBe(1);
+    expect(db.selectLeastLoadedAccount().id).toBe(account.id);
+    db.close();
+  });
+
   it('applies generation limits and can reset usage', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-test-'));
     const db = new RunwayDatabase(path.join(dir, 'test.sqlite'));
