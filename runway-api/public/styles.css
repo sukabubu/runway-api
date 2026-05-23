@@ -214,6 +214,28 @@ small,
   margin-top: 16px;
 }
 
+.update-panel {
+  margin-top: 16px;
+}
+
+#versionState {
+  margin: 4px 0 0;
+  color: var(--muted);
+}
+
+#updateOutput {
+  min-height: 92px;
+  max-height: 260px;
+  overflow: auto;
+  margin: 14px 0 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #0f172a;
+  color: #dbeafe;
+  white-space: pre-wrap;
+}
+
 form {
   display: grid;
   gap: 16px;

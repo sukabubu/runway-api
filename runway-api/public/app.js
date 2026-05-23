@@ -57,6 +57,9 @@ const el = {
   configState: $('#configState'),
   runtimeForm: $('#runtimeForm'),
   runtimeState: $('#runtimeState'),
+  versionState: $('#versionState'),
+  updateProject: $('#updateProject'),
+  updateOutput: $('#updateOutput'),
   refreshLogs: $('#refreshLogs'),
   clearLogs: $('#clearLogs'),
   logDialog: $('#logDialog'),
@@ -85,6 +88,7 @@ el.refreshAll.addEventListener('click', refreshAll);
 el.refreshTasks.addEventListener('click', refreshTasks);
 el.refreshLogs.addEventListener('click', refreshLogs);
 el.clearLogs.addEventListener('click', clearLogs);
+el.updateProject.addEventListener('click', updateProject);
 el.statusFilter.addEventListener('change', refreshTasks);
 el.modelSelect.addEventListener('change', syncModelFields);
 el.showManual.addEventListener('click', () => el.manualDialog.showModal());
@@ -314,7 +318,7 @@ function showLogin() {
 
 async function refreshAll() {
   await refreshModels();
-  await Promise.all([refreshHealth(), refreshProxies(), refreshAccounts(), refreshTasks(), refreshConfig(), refreshRuntimeConfig(), refreshLogs()]);
+  await Promise.all([refreshHealth(), refreshProxies(), refreshAccounts(), refreshTasks(), refreshConfig(), refreshRuntimeConfig(), refreshSystemVersion(), refreshLogs()]);
 }
 
 async function refreshHealth() {
@@ -789,6 +793,34 @@ function fillRuntimeConfig(cfg) {
   el.runtimeForm.logRequestBody.checked = Boolean(cfg.logRequestBody);
   el.runtimeForm.logResponseBody.checked = Boolean(cfg.logResponseBody);
   el.runtimeForm.maskSecrets.checked = Boolean(cfg.maskSecrets);
+}
+
+async function refreshSystemVersion() {
+  const version = await fetchJson('/api/system/version');
+  el.versionState.textContent = `当前分支 ${version.branch || '-'}，版本 ${version.commit || '-'}`;
+}
+
+async function updateProject() {
+  if (!confirm('确认从远端拉取最新代码？更新完成后通常需要重启服务才会完全生效。')) return;
+  el.updateProject.disabled = true;
+  el.updateOutput.textContent = '正在执行 git pull --ff-only ...';
+  try {
+    const result = await fetchJson('/api/system/update', { method: 'POST' });
+    const output = [
+      `更新状态：${result.updated ? '已更新' : '无需更新'}`,
+      `更新前：${result.before?.branch || '-'} ${result.before?.commit || '-'}`,
+      `更新后：${result.after?.branch || '-'} ${result.after?.commit || '-'}`,
+      '',
+      result.stdout || '',
+      result.stderr || ''
+    ].filter(Boolean).join('\n');
+    el.updateOutput.textContent = output;
+    await refreshSystemVersion();
+  } catch (err) {
+    el.updateOutput.textContent = `更新失败：${err.message}`;
+  } finally {
+    el.updateProject.disabled = false;
+  }
 }
 
 async function refreshLogs() {

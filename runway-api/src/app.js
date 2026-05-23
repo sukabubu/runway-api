@@ -2,12 +2,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import Fastify from 'fastify';
 import multipart from '@fastify/multipart';
 import { RUNWAY_MODELS, normalizeTaskInput } from './runway/config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(__dirname, '..');
 const publicDir = path.resolve(__dirname, '../public');
+const execFileAsync = promisify(execFile);
 
 export async function buildApp({ config, db, browser, worker, proxyManager = null, runway = null, logger }) {
   const app = Fastify({ logger });
@@ -103,6 +107,13 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
   app.put('/api/config', async (request) => {
     const updated = db.updateAdminConfig(request.body || {});
     return { username: updated.username, apiKey: updated.api_key };
+  });
+
+  app.get('/api/system/version', async () => getGitVersion());
+
+  app.post('/api/system/update', async (request, reply) => {
+    if (!hasAdminSession(request)) return reply.code(403).send({ error: 'admin_session_required', message: '项目更新只允许后台登录会话操作。' });
+    return updateFromRemote();
   });
 
   app.get('/api/accounts', async () => ({
@@ -805,6 +816,49 @@ function createRetryTask({ db, original }) {
     });
   }
   return retry;
+}
+
+async function getGitVersion() {
+  const [branch, commit] = await Promise.all([
+    runGit(['rev-parse', '--abbrev-ref', 'HEAD']).catch((err) => ({ stdout: null, stderr: err.message })),
+    runGit(['rev-parse', '--short', 'HEAD']).catch((err) => ({ stdout: null, stderr: err.message }))
+  ]);
+  return {
+    branch: branch.stdout?.trim() || null,
+    commit: commit.stdout?.trim() || null
+  };
+}
+
+async function updateFromRemote() {
+  const before = await getGitVersion();
+  const result = await runGit(['pull', '--ff-only']);
+  const after = await getGitVersion();
+  return {
+    ok: true,
+    updated: before.commit && after.commit ? before.commit !== after.commit : result.stdout.trim() !== 'Already up to date.',
+    before,
+    after,
+    stdout: result.stdout.trim(),
+    stderr: result.stderr.trim()
+  };
+}
+
+async function runGit(args) {
+  try {
+    const { stdout, stderr } = await execFileAsync('git', args, {
+      cwd: repoRoot,
+      timeout: 120000,
+      maxBuffer: 1024 * 1024
+    });
+    return { stdout, stderr };
+  } catch (err) {
+    const error = new Error(err.stderr || err.stdout || err.message || 'git command failed');
+    error.statusCode = 500;
+    error.code = 'GIT_UPDATE_FAILED';
+    error.stdout = err.stdout || '';
+    error.stderr = err.stderr || '';
+    throw error;
+  }
 }
 
 function importAccounts({ db, input, operation = 'account_import' }) {

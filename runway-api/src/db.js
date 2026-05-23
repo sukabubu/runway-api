@@ -1376,7 +1376,7 @@ export class RunwayDatabase {
     const rows = this.db.prepare(`
       SELECT id, account_id, status, runway_task_id, submitted_at, updated_at
       FROM tasks
-      WHERE status IN ('submitting', 'queuing', 'generating')
+      WHERE status IN ('submitting', 'generating')
         AND COALESCE(submitted_at, updated_at) < ?
     `).all(cutoff);
     for (const row of rows) {

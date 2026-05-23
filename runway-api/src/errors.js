@@ -38,6 +38,9 @@ export function normalizeTaskError(error, rawStatus = null) {
 
 export function summarizeError({ code, category, message, detail }) {
   const haystack = [code, category, message, JSON.stringify(detail || {})].filter(Boolean).join(' ');
+  if (/TASK_TIMEOUT|maximum runtime|最大运行时间/i.test(haystack)) {
+    return '任务超过最大运行时间';
+  }
   if (/SAFETY\.INPUT\.TEXT|Text did not pass content moderation/i.test(haystack)) {
     return '提示词未通过内容审核';
   }
@@ -49,9 +52,6 @@ export function summarizeError({ code, category, message, detail }) {
   }
   if (/AUTH_FAILED|401|403|jwt|credential|unauthorized/i.test(haystack)) {
     return '账号凭证失效';
-  }
-  if (/TASK_TIMEOUT|maximum runtime|最大运行时间/i.test(haystack)) {
-    return '任务超过最大运行时间';
   }
   if (/S3 upload|upload failed|RequestTimeout|AbortError|timeout/i.test(haystack)) {
     return '上传或请求超时';

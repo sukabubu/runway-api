@@ -305,4 +305,36 @@ describe('RunwayDatabase', () => {
     expect(db.getAccount(account.id).inflight).toBe(0);
     db.close();
   });
+
+  it('does not count queuing time toward task timeout', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-test-'));
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'));
+    const account = db.createAccount({
+      name: 'a',
+      jwt: 'jwt-a',
+      teamId: 1,
+      inflight: 1
+    });
+    db.createTask({
+      id: 'queued-timeout-task',
+      accountId: account.id,
+      runwayTaskId: 'runway-queued',
+      status: 'queuing',
+      rawStatus: 'PENDING',
+      prompt: 'hello',
+      model: 'seedance_2',
+      duration: 5,
+      resolution: '480p',
+      aspectRatio: '16:9',
+      generateAudio: true,
+      exploreMode: true,
+      submittedAt: new Date(Date.now() - 60_000).toISOString()
+    });
+    expect(db.recoverTimedOutTasks(1)).toBe(0);
+    expect(db.getTask('queued-timeout-task')).toMatchObject({
+      status: 'queuing',
+      error: null
+    });
+    db.close();
+  });
 });

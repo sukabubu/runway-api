@@ -34,6 +34,7 @@ describe('app frontend and auth', () => {
     expect(page.headers['content-type']).toContain('text/html');
     expect(page.body).toContain('Runway API 管理后台');
     expect(page.body).toContain('taskForm');
+    expect(page.body).toContain('updateProject');
 
     const publicModels = await app.inject({ method: 'GET', url: '/models' });
     expect(publicModels.statusCode).toBe(200);
@@ -54,6 +55,41 @@ describe('app frontend and auth', () => {
     const authorized = await app.inject({ method: 'GET', url: '/tasks', headers: { authorization: 'Bearer secret' } });
     expect(authorized.statusCode).toBe(200);
     expect(JSON.parse(authorized.body).tasks).toEqual([]);
+
+    await app.close();
+  });
+
+  it('allows reading system version but requires admin session for project updates', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-system-test-'));
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'), { adminUsername: 'admin', adminPassword: 'admin', internalApiKey: 'secret' });
+    const app = await buildApp({
+      config: { internalApiKey: 'secret', uploadDir: path.join(dir, 'uploads') },
+      db,
+      browser: {
+        status: () => ({ started: false, pages: 0, headless: true }),
+        close: async () => {}
+      },
+      worker: {
+        start: () => {},
+        stop: async () => {}
+      },
+      logger: false
+    });
+
+    const version = await app.inject({
+      method: 'GET',
+      url: '/api/system/version',
+      headers: { authorization: 'Bearer secret' }
+    });
+    expect(version.statusCode).toBe(200);
+    expect(JSON.parse(version.body)).toHaveProperty('branch');
+
+    const apiKeyUpdate = await app.inject({
+      method: 'POST',
+      url: '/api/system/update',
+      headers: { authorization: 'Bearer secret' }
+    });
+    expect(apiKeyUpdate.statusCode).toBe(403);
 
     await app.close();
   });
