@@ -275,7 +275,6 @@ describe('account admin API', () => {
           authorization: 'Bearer plugin-jwt',
           cookieHeader: 'session=plugin',
           teamId: 9,
-          assetGroupId: 'asset-plugin',
           clientId: 'client-plugin',
           sourceApplicationVersion: 'source-plugin'
         }]
@@ -290,7 +289,7 @@ describe('account admin API', () => {
       hasJwt: true,
       hasCookie: true,
       teamId: 9,
-      assetGroupId: 'asset-plugin'
+      ready: true
     });
 
     await app.close();

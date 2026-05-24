@@ -5,7 +5,6 @@ const el = {
   jwt: $('#jwtState'),
   cookie: $('#cookieState'),
   team: $('#teamState'),
-  asset: $('#assetState'),
   serverUrl: $('#serverUrl'),
   apiKey: $('#apiKey'),
   output: $('#output'),
@@ -85,8 +84,7 @@ function renderAccount(account = {}) {
   el.jwt.textContent = account.jwt ? '已抓取' : '缺失';
   el.cookie.textContent = account.cookieHeader ? '已抓取' : '缺失';
   el.team.textContent = account.teamId || '缺失';
-  el.asset.textContent = account.assetGroupId || '缺失';
-  const ready = Boolean((account.jwt || account.authorization) && account.cookieHeader && account.teamId && account.assetGroupId);
+  const ready = Boolean((account.jwt || account.authorization || account.cookieHeader) && account.teamId);
   el.badge.textContent = ready ? '可导入' : '未就绪';
   el.badge.classList.toggle('ready', ready);
   el.output.textContent = maskJson(JSON.stringify({ accounts: [account] }, null, 2));

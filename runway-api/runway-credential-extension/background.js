@@ -171,10 +171,8 @@ function buildAccountExport(state = {}) {
 }
 
 function validateAccount(account) {
-  if (!(account.jwt || account.authorization)) throw new Error('还没有抓到 Authorization/JWT，请刷新 Runway 页面或生成页');
-  if (!account.cookieHeader) throw new Error('还没有抓到 Cookie，请确认插件有 Cookie 权限并已登录 Runway');
+  if (!(account.jwt || account.authorization || account.cookieHeader)) throw new Error('还没有抓到 Authorization/JWT 或 Cookie，请刷新 Runway 页面或生成页');
   if (!account.teamId) throw new Error('还没有抓到 teamId，请打开 Runway 生成页或发起一次页面请求');
-  if (!account.assetGroupId) throw new Error('还没有抓到 assetGroupId，请打开 Runway 生成页或发起一次生成前请求');
 }
 
 function normalizeBearerToken(value) {

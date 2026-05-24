@@ -498,7 +498,6 @@ async function fillAccountForm(id) {
   form.authorization.value = account.jwt ? `Bearer ${account.jwt}` : '';
   form.cookie.value = account.cookieHeader || '';
   form.teamId.value = account.teamId || '';
-  form.assetGroupId.value = account.assetGroupId || '';
   form.clientId.value = account.clientId || '';
   form.sourceVersion.value = account.sourceApplicationVersion || '';
   form.requestTimeoutMs.value = account.requestTimeoutMs || '';
@@ -539,6 +538,7 @@ function accountDetailSummary(account) {
     ['Runway额度', creditSummaryText(account.runwayCredits)],
     ['额度查询', account.runwayCreditsCheckedAt ? formatDate(account.runwayCreditsCheckedAt) : '未查询'],
     ['凭证', `JWT ${account.hasJwt ? '有' : '无'} / Cookie ${account.hasCookie ? '有' : '无'}`],
+    ['teamId', account.teamId || '-'],
     ['最近错误', account.lastError || '-']
   ];
   return rows.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join('');
