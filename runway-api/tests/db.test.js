@@ -108,7 +108,35 @@ describe('RunwayDatabase', () => {
     expect(available.generationLimit).toBe(80);
     expect(db.selectLeastLoadedAccount().id).toBe(available.id);
     db.resetAccountGenerationUsage(full.id);
-    expect(db.selectLeastLoadedAccount().id).toBe(full.id);
+    expect([full.id, available.id]).toContain(db.selectLeastLoadedAccount().id);
+    db.close();
+  });
+
+  it('spreads account acquisition across equal-load accounts', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-test-'));
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'));
+    const accounts = Array.from({ length: 4 }, (_, index) => db.createAccount({
+      name: `account-${index + 1}`,
+      jwt: `jwt-${index + 1}`,
+      teamId: index + 1,
+      maxConcurrent: 2
+    }));
+    const acquired = [];
+    for (let index = 0; index < accounts.length; index += 1) {
+      const task = db.createTask({
+        id: `lb-task-${index + 1}`,
+        status: 'pending',
+        prompt: 'hello',
+        model: 'seedance_2',
+        duration: 5,
+        resolution: '480p',
+        aspectRatio: '16:9',
+        generateAudio: true,
+        exploreMode: true
+      });
+      acquired.push(db.acquireAccountForTask(task.id).id);
+    }
+    expect(new Set(acquired).size).toBe(accounts.length);
     db.close();
   });
 

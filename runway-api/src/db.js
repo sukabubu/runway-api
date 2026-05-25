@@ -914,7 +914,11 @@ export class RunwayDatabase {
       ORDER BY (inflight + (
         SELECT COUNT(*) FROM tasks
         WHERE tasks.account_id = accounts.id AND tasks.status = 'pending'
-      )) ASC, COALESCE(accounts.last_used_at, accounts.created_at) ASC
+      )) ASC,
+      CASE WHEN accounts.last_used_at IS NULL THEN 0 ELSE 1 END ASC,
+      CASE WHEN accounts.last_used_at IS NULL THEN RANDOM() ELSE 0 END,
+      accounts.last_used_at ASC,
+      RANDOM()
     `).all();
     return rows.map((row) => hydrateAccount(row, { includeSecret }));
   }
