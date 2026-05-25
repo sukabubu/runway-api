@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Readable } from 'node:stream';
 import Fastify from 'fastify';
@@ -14,7 +14,7 @@ const repoRoot = path.resolve(__dirname, '..');
 const publicDir = path.resolve(__dirname, '../public');
 const execFileAsync = promisify(execFile);
 
-export async function buildApp({ config, db, browser, worker, proxyManager = null, runway = null, logger }) {
+export async function buildApp({ config, db, browser, worker, proxyManager = null, runway = null, systemUpdater = updateFromRemote, logger }) {
   const app = Fastify({ logger });
   await app.register(multipart, {
     limits: {
@@ -115,7 +115,7 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
 
   app.post('/api/system/update', async (request, reply) => {
     if (!hasAdminSession(request)) return reply.code(403).send({ error: 'admin_session_required', message: '项目更新只允许后台登录会话操作。' });
-    return updateFromRemote();
+    return systemUpdater({ config });
   });
 
   app.get('/api/accounts', async () => ({
@@ -840,17 +840,30 @@ async function getGitVersion() {
   };
 }
 
-async function updateFromRemote() {
+async function updateFromRemote({ config }) {
   const before = await getGitVersion();
-  const result = await runGit(['pull', '--ff-only']);
+  const pull = await runGit(['pull', '--ff-only']);
+  const install = await runNpmInstall();
   const after = await getGitVersion();
+  const updated = before.commit && after.commit ? before.commit !== after.commit : pull.stdout.trim() !== 'Already up to date.';
+  const restart = planRestart(config, updated);
+  if (restart.scheduled) scheduleRestart(restart);
   return {
     ok: true,
-    updated: before.commit && after.commit ? before.commit !== after.commit : result.stdout.trim() !== 'Already up to date.',
+    updated,
     before,
     after,
-    stdout: result.stdout.trim(),
-    stderr: result.stderr.trim()
+    restart,
+    stdout: [
+      '$ git pull --ff-only',
+      pull.stdout.trim(),
+      pull.stderr.trim(),
+      '',
+      '$ npm install',
+      install.stdout.trim(),
+      install.stderr.trim()
+    ].filter(Boolean).join('\n'),
+    stderr: ''
   };
 }
 
@@ -870,6 +883,63 @@ async function runGit(args) {
     error.stderr = err.stderr || '';
     throw error;
   }
+}
+
+async function runNpmInstall() {
+  try {
+    const { stdout, stderr } = await execFileAsync('npm', ['install'], {
+      cwd: repoRoot,
+      timeout: 180000,
+      maxBuffer: 2 * 1024 * 1024
+    });
+    return { stdout, stderr };
+  } catch (err) {
+    const error = new Error(err.stderr || err.stdout || err.message || 'npm install failed');
+    error.statusCode = 500;
+    error.code = 'NPM_INSTALL_FAILED';
+    error.stdout = err.stdout || '';
+    error.stderr = err.stderr || '';
+    throw error;
+  }
+}
+
+function planRestart(config, updated) {
+  if (!updated) return { scheduled: false, method: 'none', message: '代码无变化，无需重启' };
+  if (!config.autoRestartOnUpdate) return { scheduled: false, method: 'manual', message: '已更新，但自动重启已关闭' };
+  if (config.restartCommand) {
+    return {
+      scheduled: true,
+      method: 'command',
+      command: config.restartCommand,
+      delayMs: 1200,
+      message: '已安排执行自定义重启命令'
+    };
+  }
+  if (process.env.pm_id || process.env.PM2_HOME) {
+    const target = process.env.pm_id || config.pm2ProcessName || 'runway-api';
+    return {
+      scheduled: true,
+      method: 'pm2',
+      command: `pm2 restart ${target}`,
+      args: ['restart', target],
+      delayMs: 1200,
+      message: `已安排 PM2 重启：${target}`
+    };
+  }
+  return {
+    scheduled: false,
+    method: 'manual',
+    message: '已更新，但当前进程不是 PM2 托管，也没有配置 RESTART_COMMAND，需要手动重启'
+  };
+}
+
+function scheduleRestart(restart) {
+  setTimeout(() => {
+    const child = restart.method === 'pm2'
+      ? spawn('pm2', restart.args, { cwd: repoRoot, detached: true, stdio: 'ignore' })
+      : spawn('sh', ['-lc', restart.command], { cwd: repoRoot, detached: true, stdio: 'ignore' });
+    child.unref();
+  }, restart.delayMs || 1200).unref();
 }
 
 function importAccounts({ db, input, operation = 'account_import' }) {

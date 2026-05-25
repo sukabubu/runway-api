@@ -836,15 +836,17 @@ async function refreshSystemVersion() {
 }
 
 async function updateProject() {
-  if (!confirm('确认从远端拉取最新代码？更新完成后通常需要重启服务才会完全生效。')) return;
+  if (!confirm('确认从远端拉取最新代码并尝试自动上线？PM2 托管或配置了重启命令时会自动重启服务。')) return;
   el.updateProject.disabled = true;
-  el.updateOutput.textContent = '正在执行 git pull --ff-only ...';
+  el.updateOutput.textContent = '正在执行 git pull --ff-only、npm install，并准备自动上线...';
   try {
     const result = await fetchJson('/api/system/update', { method: 'POST' });
     const output = [
       `更新状态：${result.updated ? '已更新' : '无需更新'}`,
       `更新前：${result.before?.branch || '-'} ${result.before?.commit || '-'}`,
       `更新后：${result.after?.branch || '-'} ${result.after?.commit || '-'}`,
+      `上线状态：${result.restart?.message || '-'}`,
+      result.restart?.command ? `重启命令：${result.restart.command}` : '',
       '',
       result.stdout || '',
       result.stderr || ''

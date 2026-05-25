@@ -26,6 +26,18 @@ describe('app frontend and auth', () => {
         start: () => {},
         stop: async () => {}
       },
+      systemUpdater: async ({ config }) => ({
+        ok: true,
+        updated: true,
+        before: { branch: 'main', commit: 'old' },
+        after: { branch: 'main', commit: 'new' },
+        restart: {
+          scheduled: Boolean(config.autoRestartOnUpdate),
+          method: config.autoRestartOnUpdate ? 'pm2' : 'manual'
+        },
+        stdout: '',
+        stderr: ''
+      }),
       logger: false
     });
 
@@ -73,6 +85,18 @@ describe('app frontend and auth', () => {
         start: () => {},
         stop: async () => {}
       },
+      systemUpdater: async ({ config }) => ({
+        ok: true,
+        updated: true,
+        before: { branch: 'main', commit: 'old' },
+        after: { branch: 'main', commit: 'new' },
+        restart: {
+          scheduled: Boolean(config.autoRestartOnUpdate),
+          method: config.autoRestartOnUpdate ? 'pm2' : 'manual'
+        },
+        stdout: '',
+        stderr: ''
+      }),
       logger: false
     });
 
@@ -90,6 +114,62 @@ describe('app frontend and auth', () => {
       headers: { authorization: 'Bearer secret' }
     });
     expect(apiKeyUpdate.statusCode).toBe(403);
+
+    await app.close();
+  });
+
+  it('reports system update restart mode through admin sessions', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-system-update-test-'));
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'), { adminUsername: 'admin', adminPassword: 'admin', internalApiKey: 'secret' });
+    const app = await buildApp({
+      config: {
+        internalApiKey: 'secret',
+        uploadDir: path.join(dir, 'uploads'),
+        autoRestartOnUpdate: false
+      },
+      db,
+      browser: {
+        status: () => ({ started: false, pages: 0, headless: true }),
+        close: async () => {}
+      },
+      worker: {
+        start: () => {},
+        stop: async () => {}
+      },
+      systemUpdater: async ({ config }) => ({
+        ok: true,
+        updated: true,
+        before: { branch: 'main', commit: 'old' },
+        after: { branch: 'main', commit: 'new' },
+        restart: {
+          scheduled: Boolean(config.autoRestartOnUpdate),
+          method: config.autoRestartOnUpdate ? 'pm2' : 'manual'
+        },
+        stdout: '',
+        stderr: ''
+      }),
+      logger: false
+    });
+
+    const login = await app.inject({
+      method: 'POST',
+      url: '/admin/login',
+      payload: { username: 'admin', password: 'admin' }
+    });
+    const cookie = login.headers['set-cookie'];
+    const update = await app.inject({
+      method: 'POST',
+      url: '/api/system/update',
+      headers: { cookie }
+    });
+    expect(update.statusCode).toBe(200);
+    expect(JSON.parse(update.body)).toMatchObject({
+      ok: true,
+      restart: {
+        scheduled: false,
+        method: expect.any(String)
+      }
+    });
 
     await app.close();
   });

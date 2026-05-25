@@ -156,4 +156,15 @@ VIDEO_PROXY_TOKEN_TTL_SECONDS=3600
 
 第一阶段建议单机部署，一个主 worker 进程配 SQLite。SQLite 队列已经有 lease、过期锁恢复、卡死任务恢复和任务超时保护。
 
+后台“更新并上线”会执行 `git pull --ff-only` 和 `npm install`。如果服务由 PM2 托管，或配置了 `RESTART_COMMAND`，更新后会自动重启上线：
+
+```env
+AUTO_RESTART_ON_UPDATE=true
+PM2_PROCESS_NAME=runway-api
+# 或者
+RESTART_COMMAND=pm2 restart runway-api
+```
+
+如果不是 PM2 托管，也没有配置 `RESTART_COMMAND`，后台会完成拉取和安装，但会提示需要手动重启。
+
 如果要多实例横向扩容，建议先把队列和状态存储换成 Redis/Postgres，避免多个进程直接抢同一个 SQLite 文件。
