@@ -28,10 +28,17 @@ export function normalizeTaskError(error, rawStatus = null) {
     source.errorReason,
     source.reason
   );
+  const reason = firstString(
+    detail?.reason,
+    findByKey(source, ['llmResponse', 'explanation', 'description', 'details']),
+    message
+  );
   return {
     errorSummary: summarizeError({ code, category, message, detail }),
     errorCode: code,
     errorCategory: category,
+    errorMessage: message,
+    errorReason: reason,
     errorDetail: detail
   };
 }
@@ -75,8 +82,15 @@ function firstString(...values) {
 }
 
 function findByKey(value, keys) {
+  for (const key of keys) {
+    const found = findOneKey(value, key);
+    if (found) return found;
+  }
+  return null;
+}
+
+function findOneKey(value, wantedKey) {
   if (!value || typeof value !== 'object') return null;
-  const wanted = new Set(keys);
   const queue = [value];
   const seen = new Set();
   while (queue.length) {
@@ -84,7 +98,7 @@ function findByKey(value, keys) {
     if (!item || typeof item !== 'object' || seen.has(item)) continue;
     seen.add(item);
     for (const [key, child] of Object.entries(item)) {
-      if (wanted.has(key) && child != null && typeof child !== 'object') {
+      if (key === wantedKey && child != null && typeof child !== 'object') {
         const text = String(child).trim();
         if (text) return text;
       }

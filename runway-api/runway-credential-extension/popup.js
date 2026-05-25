@@ -7,6 +7,7 @@ const el = {
   team: $('#teamState'),
   serverUrl: $('#serverUrl'),
   apiKey: $('#apiKey'),
+  feedback: $('#feedback'),
   output: $('#output'),
   refresh: $('#refresh'),
   copy: $('#copy'),
@@ -32,12 +33,12 @@ async function loadSettings() {
   el.apiKey.value = response.settings?.apiKey || '';
 }
 
-async function refreshState() {
+async function refreshState(options = {}) {
   setBusy(el.refresh, true);
   try {
     const response = await sendMessage({ type: 'get-state' });
     currentAccount = response.state || {};
-    renderAccount(currentAccount);
+    renderAccount(currentAccount, options);
   } catch (err) {
     showError(err);
   } finally {
@@ -71,23 +72,29 @@ async function importAccount() {
       serverUrl: el.serverUrl.value,
       apiKey: el.apiKey.value
     });
-    el.output.textContent = `导入完成：成功 ${response.result.imported || 0} 条，失败 ${response.result.skipped || 0} 条\n\n${JSON.stringify(response.result, null, 2)}`;
+    const imported = response.result.imported || 0;
+    const skipped = response.result.skipped || 0;
+    showFeedback(`导入完成：成功 ${imported} 条，失败 ${skipped} 条`, skipped ? 'error' : 'success');
+    el.output.textContent = `导入完成：成功 ${imported} 条，失败 ${skipped} 条\n\n${maskJson(JSON.stringify(response.result, null, 2))}`;
   } catch (err) {
     showError(err);
   } finally {
     setBusy(el.import, false);
-    await refreshState();
+    await refreshState({ keepOutput: true, keepFeedback: true });
   }
 }
 
-function renderAccount(account = {}) {
+function renderAccount(account = {}, options = {}) {
   el.jwt.textContent = account.jwt ? '已抓取' : '缺失';
   el.cookie.textContent = account.cookieHeader ? '已抓取' : '缺失';
   el.team.textContent = account.teamId || '缺失';
   const ready = Boolean((account.jwt || account.authorization || account.cookieHeader) && account.teamId);
   el.badge.textContent = ready ? '可导入' : '未就绪';
   el.badge.classList.toggle('ready', ready);
-  el.output.textContent = maskJson(JSON.stringify({ accounts: [account] }, null, 2));
+  if (!options.keepFeedback) hideFeedback();
+  if (!options.keepOutput) {
+    el.output.textContent = maskJson(JSON.stringify({ accounts: [account] }, null, 2));
+  }
 }
 
 function sendMessage(message) {
@@ -111,7 +118,21 @@ function setBusy(button, busy) {
 }
 
 function showError(err) {
-  el.output.textContent = `错误：${err.message || err}`;
+  const message = err.message || err;
+  showFeedback(`错误：${message}`, 'error');
+  el.output.textContent = `错误：${message}`;
+}
+
+function showFeedback(message, type = 'info') {
+  el.feedback.textContent = message;
+  el.feedback.hidden = false;
+  el.feedback.className = `feedback ${type}`;
+}
+
+function hideFeedback() {
+  el.feedback.hidden = true;
+  el.feedback.textContent = '';
+  el.feedback.className = 'feedback';
 }
 
 function maskJson(json) {

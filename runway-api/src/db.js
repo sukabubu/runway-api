@@ -1954,6 +1954,8 @@ function hydrateTask(row, assets = []) {
     errorSummary: normalizedError.errorSummary || null,
     errorCode: normalizedError.errorCode || null,
     errorCategory: normalizedError.errorCategory || null,
+    errorMessage: normalizedError.errorMessage || null,
+    errorReason: normalizedError.errorReason || null,
     errorDetail: normalizedError.errorDetail || null,
     rawResponse: parseJson(row.raw_response),
     lockedBy: row.locked_by,

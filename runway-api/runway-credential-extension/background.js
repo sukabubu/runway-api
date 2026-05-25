@@ -1,6 +1,7 @@
 const RUNWAY_API_FILTER = { urls: ['https://api.runwayml.com/*'] };
 const RUNWAY_COOKIE_URLS = ['https://app.runwayml.com/', 'https://api.runwayml.com/'];
 const STATE_KEY = 'runwayCredentialState';
+const IMPORT_TIMEOUT_MS = 15000;
 
 chrome.webRequest.onBeforeSendHeaders.addListener(
   async (details) => {
@@ -73,13 +74,15 @@ async function handleMessage(message = {}) {
     const { [STATE_KEY]: state = {} } = await chrome.storage.local.get(STATE_KEY);
     const account = buildAccountExport(state);
     validateAccount(account);
-    const response = await fetch(`${serverUrl}/api/plugin/accounts/import`, {
+    const response = await fetchWithTimeout(`${serverUrl}/api/plugin/accounts/import`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({ accounts: [account] })
+    }, IMPORT_TIMEOUT_MS).catch((err) => {
+      throw new Error(describeFetchFailure(serverUrl, err));
     });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(body.message || body.error || `导入失败：HTTP ${response.status}`);
@@ -181,6 +184,30 @@ function normalizeBearerToken(value) {
 
 function normalizeServerUrl(value) {
   return String(value || '').trim().replace(/\/+$/, '');
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = IMPORT_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function describeFetchFailure(serverUrl, err) {
+  const url = String(serverUrl || '').trim();
+  if (err?.name === 'AbortError') {
+    return `连接 runway-api 超时：${url}。请确认服务器已启动，地址可访问。`;
+  }
+  if (!/^https?:\/\//i.test(url)) {
+    return `服务器地址必须以 http:// 或 https:// 开头：${url || '空'}`;
+  }
+  if (/^http:\/\/(?!127\.0\.0\.1(?::|\/|$)|localhost(?::|\/|$))/i.test(url)) {
+    return `无法连接 ${url}。如果这是远程服务器，建议使用 HTTPS；Chrome 可能会拦截不安全的 HTTP 请求。原始错误：${err?.message || err}`;
+  }
+  return `无法连接 runway-api：${url}。请确认地址、端口、HTTPS 证书、反向代理和 INTERNAL_API_KEY。更新插件后需要在 chrome://extensions 里点击“重新加载”。原始错误：${err?.message || err}`;
 }
 
 function compact(value) {

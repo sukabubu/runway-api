@@ -209,6 +209,27 @@ describe('account admin API', () => {
     });
     expect(singleBody.accounts[0].id).not.toBe(existing.id);
 
+    const withoutClientId = await app.inject({
+      method: 'POST',
+      url: '/api/accounts/import',
+      headers: { authorization: 'Bearer secret' },
+      payload: {
+        name: 'clientId 异常账号',
+        authorization: 'Bearer no-client-jwt',
+        cookieHeader: 'session=no-client',
+        teamId: 3,
+        client: { unexpected: true }
+      }
+    });
+    expect(withoutClientId.statusCode).toBe(200);
+    const withoutClientIdBody = JSON.parse(withoutClientId.body);
+    expect(withoutClientIdBody.imported).toBe(1);
+    expect(withoutClientIdBody.accounts[0]).toMatchObject({
+      name: 'clientId 异常账号',
+      ready: true,
+      clientId: null
+    });
+
     const mixed = await app.inject({
       method: 'POST',
       url: '/api/accounts/import',
@@ -233,7 +254,7 @@ describe('account admin API', () => {
     expect(mixedBody.imported).toBe(1);
     expect(mixedBody.skipped).toBe(1);
     expect(mixedBody.errors[0].message).toContain('不是有效对象');
-    expect(db.listAccounts()).toHaveLength(3);
+    expect(db.listAccounts()).toHaveLength(4);
 
     await app.close();
   });
@@ -401,6 +422,140 @@ describe('OpenAI compatible video API', () => {
     });
 
     await app.close();
+  });
+
+  it('refreshes completed task signed video URLs on task detail reads', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-signed-url-test-'));
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'), { internalApiKey: 'secret' });
+    const mediaServer = http.createServer((request, response) => {
+      if (request.url === '/video-v1.mp4') {
+        response.writeHead(200, { 'Content-Type': 'video/mp4' });
+        response.end('VIDEO_V1');
+        return;
+      }
+      if (request.url === '/video-content.mp4') {
+        response.writeHead(200, { 'Content-Type': 'video/mp4' });
+        response.end('VIDEO_CONTENT');
+        return;
+      }
+      if (request.url === '/video-tasks.mp4') {
+        response.writeHead(200, { 'Content-Type': 'video/mp4' });
+        response.end('VIDEO_TASKS');
+        return;
+      }
+      response.writeHead(404);
+      response.end();
+    });
+    await new Promise((resolve) => mediaServer.listen(0, '127.0.0.1', resolve));
+    const mediaBaseUrl = `http://127.0.0.1:${mediaServer.address().port}`;
+    const account = db.createAccount({
+      name: '账号',
+      jwt: 'jwt-old',
+      cookieHeader: 'session=abc',
+      teamId: 1
+    });
+    db.createTask({
+      id: 'completed-task',
+      accountId: account.id,
+      runwayTaskId: 'runway-task',
+      status: 'completed',
+      rawStatus: 'SUCCEEDED',
+      prompt: 'hello',
+      model: 'seedance_2',
+      duration: 5,
+      resolution: '480p',
+      aspectRatio: '16:9',
+      generateAudio: true,
+      exploreMode: true,
+      progress: 100,
+      videoUrl: 'https://signed.example/old',
+      thumbnailUrl: 'https://signed.example/old-thumb',
+      submittedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString()
+    });
+    const pollTask = vi.fn()
+      .mockResolvedValueOnce({
+        taskId: 'runway-task',
+        status: 'completed',
+        rawStatus: 'SUCCEEDED',
+        progress: 100,
+        videoUrl: `${mediaBaseUrl}/video-v1.mp4`,
+        thumbnailUrl: `${mediaBaseUrl}/thumb-v1.jpg`,
+        rawResponse: { task: { id: 'runway-task' } }
+      })
+      .mockResolvedValueOnce({
+        taskId: 'runway-task',
+        status: 'completed',
+        rawStatus: 'SUCCEEDED',
+        progress: 100,
+        videoUrl: `${mediaBaseUrl}/video-content.mp4`,
+        thumbnailUrl: `${mediaBaseUrl}/thumb-content.jpg`,
+        rawResponse: { task: { id: 'runway-task' } }
+      })
+      .mockResolvedValueOnce({
+        taskId: 'runway-task',
+        status: 'completed',
+        rawStatus: 'SUCCEEDED',
+        progress: 100,
+        videoUrl: `${mediaBaseUrl}/video-tasks.mp4`,
+        thumbnailUrl: `${mediaBaseUrl}/thumb-tasks.jpg`,
+        rawResponse: { task: { id: 'runway-task' } }
+      });
+    const app = await buildApp({
+      config: { internalApiKey: 'secret', uploadDir: path.join(dir, 'uploads') },
+      db,
+      browser: {
+        status: () => ({ started: false, pages: 0, headless: true }),
+        close: async () => {}
+      },
+      worker: {
+        start: () => {},
+        stop: async () => {}
+      },
+      runway: { pollTask },
+      logger: false
+    });
+
+    const v1Detail = await app.inject({
+      method: 'GET',
+      url: '/v1/videos/completed-task',
+      headers: { authorization: 'Bearer secret' }
+    });
+    expect(v1Detail.statusCode).toBe(200);
+    const v1Body = JSON.parse(v1Detail.body);
+    expect(v1Body.video_url).toContain('/v1/videos/completed-task/content?');
+    expect(v1Body.thumbnail_url).toContain('/v1/videos/completed-task/thumbnail?');
+    expect(v1Body.video_url).not.toContain(mediaBaseUrl);
+
+    const contentUrl = new URL(v1Body.video_url);
+    const content = await app.inject({
+      method: 'GET',
+      url: `${contentUrl.pathname}${contentUrl.search}`
+    });
+    expect(content.statusCode).toBe(200);
+    expect(content.headers['content-type']).toContain('video/mp4');
+    expect(content.body).toBe('VIDEO_CONTENT');
+
+    const taskDetail = await app.inject({
+      method: 'GET',
+      url: '/tasks/completed-task',
+      headers: { authorization: 'Bearer secret' }
+    });
+    expect(taskDetail.statusCode).toBe(200);
+    const taskBody = JSON.parse(taskDetail.body);
+    expect(taskBody.videoUrl).toContain('/v1/videos/completed-task/content?');
+    expect(taskBody.thumbnailUrl).toContain('/v1/videos/completed-task/thumbnail?');
+    expect(taskBody.videoUrl).not.toContain(mediaBaseUrl);
+    expect(taskBody.rawResponse).toBeUndefined();
+    expect(db.getTask('completed-task').videoUrl).toBe(`${mediaBaseUrl}/video-tasks.mp4`);
+    expect(pollTask).toHaveBeenCalledTimes(3);
+    expect(pollTask).toHaveBeenCalledWith('runway-task', expect.objectContaining({
+      account: expect.objectContaining({ id: account.id }),
+      operation: 'task_signed_url_refresh'
+    }));
+
+    await app.close();
+    await new Promise((resolve) => mediaServer.close(resolve));
   });
 
   it('downloads reference media URLs before queueing /v1/videos jobs', async () => {

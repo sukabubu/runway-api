@@ -214,16 +214,33 @@ describe('RunwayDatabase', () => {
     expect(normalized).toMatchObject({
       errorSummary: '参考素材未通过内容审核',
       errorCode: 'SAFETY.INPUT.MULTIMODAL',
-      errorCategory: 'SEXUALLY_EXPLICIT'
+      errorCategory: 'SEXUALLY_EXPLICIT',
+      errorMessage: 'content moderation failed'
     });
     expect(normalized.errorDetail.raw.error.message).toContain('moderation');
-    expect(normalizeTaskError({
+    const textModeration = normalizeTaskError({
       raw: {
-        reason: 'SAFETY.INPUT.TEXT',
-        errorMessage: 'Text did not pass content moderation.',
-        moderation_category: 'SEXUALLY_EXPLICIT'
+        error: {
+          reason: 'SAFETY.INPUT.TEXT',
+          errorMessage: 'Content did not pass content moderation.',
+          moderation_category: 'SEXUALLY_EXPLICIT',
+          moderationMetadata: {
+            moderationResponseClassification: [{
+              name: 'SEXUALLY_EXPLICIT',
+              result: 'SEXUALLY_EXPLICIT',
+              llmResponse: 'The text prompt describes a sexual act and physical assault.'
+            }]
+          }
+        }
       }
-    }).errorSummary).toBe('提示词未通过内容审核');
+    });
+    expect(textModeration).toMatchObject({
+      errorSummary: '提示词未通过内容审核',
+      errorCode: 'SAFETY.INPUT.TEXT',
+      errorCategory: 'SEXUALLY_EXPLICIT',
+      errorMessage: 'Content did not pass content moderation.',
+      errorReason: 'The text prompt describes a sexual act and physical assault.'
+    });
   });
 
   it('leases pending tasks atomically and only once', () => {

@@ -698,6 +698,28 @@ function renderTasks(tasks) {
       el.logDialog.showModal();
     });
   }
+  for (const button of $$('[data-open-video]')) {
+    button.addEventListener('click', async () => {
+      const tab = window.open('about:blank', '_blank');
+      try {
+        button.disabled = true;
+        button.textContent = '获取链接';
+        const video = await fetchJson(`/v1/videos/${button.dataset.openVideo}`);
+        if (!video.video_url) throw new Error('任务还没有可用的视频链接。');
+        if (tab) {
+          tab.location.href = video.video_url;
+        } else {
+          window.location.href = video.video_url;
+        }
+      } catch (err) {
+        if (tab) tab.close();
+        alert(err.message || '获取视频链接失败');
+      } finally {
+        button.disabled = false;
+        button.textContent = '打开视频';
+      }
+    });
+  }
 }
 
 function canCancelTask(task) {
@@ -706,14 +728,23 @@ function canCancelTask(task) {
 
 function renderTaskResult(task) {
   if (task.videoUrl) {
-    return `<a href="${escapeAttr(task.videoUrl)}" target="_blank" rel="noreferrer">打开视频</a>`;
+    return `<button type="button" data-open-video="${escapeAttr(task.id)}">打开视频</button>`;
   }
   const raw = task.rawStatus ? ` / ${task.rawStatus}` : '';
   const text = task.status === 'failed'
     ? `${task.errorSummary || task.errorCode || '任务失败'}${raw}`
     : (task.runwayTaskId || task.rawStatus || '-');
   const title = task.status === 'failed'
-    ? `${task.errorSummary || ''}${task.errorCode ? `\n${task.errorCode}` : ''}${task.error?.message ? `\n${task.error.message}` : ''}`
+    ? [
+        task.errorSummary,
+        task.errorCode,
+        task.errorCategory,
+        task.errorMessage,
+        task.errorReason,
+        task.error?.message,
+        task.error?.reason,
+        task.error?.runway_message
+      ].filter(Boolean).join('\n')
     : text;
   return `<span title="${escapeAttr(title)}">${escapeHtml(text)}</span>`;
 }
@@ -727,6 +758,7 @@ function fromV1Video(video) {
     runwayTaskId: video.runway_task_id,
     status: fromV1Status(video.status),
     rawStatus: video.metadata?.raw_status,
+    signedUrlRefreshError: video.metadata?.signed_url_refresh_error,
     prompt: video.metadata?.prompt || '',
     model: video.model,
     duration: video.metadata?.duration,
@@ -740,6 +772,9 @@ function fromV1Video(video) {
     errorSummary: video.error?.message,
     errorCode: video.error?.code,
     errorCategory: video.error?.category,
+    errorMessage: video.error?.runway_message,
+    errorReason: video.error?.reason,
+    errorDetail: video.error?.detail,
     error: video.error,
     createdAt: video.metadata?.created_at,
     updatedAt: video.metadata?.updated_at,

@@ -12,12 +12,13 @@ Runway-only 私有 API 服务。它把 Runway Web 的上传、提交、轮询流
 ## 功能
 
 - 多 Runway 账号管理
-- Web 登录抓取凭证，或手动粘贴 `Authorization/Cookie/teamId/assetGroupId`
+- Web 登录抓取凭证，或手动粘贴 `Authorization/Cookie/teamId`
 - Cookie 有效时自动刷新 JWT
 - 每账号默认并发 `2`
 - 每账号每日生成数量上限，默认 `80`，按北京时间自然日自动刷新
 - 最少负载优先分发任务
 - 图片/视频参考上传
+- 视频结果流式代理，业务方不直接看到 Runway 原始签名 URL
 - 异步任务队列，失败原因中文摘要
 - 代理池和账号级代理策略
 - 请求日志、任务详情、任务事件时间线
@@ -107,6 +108,13 @@ curl -H "Authorization: Bearer change-me" \
   http://127.0.0.1:8790/v1/videos/<task-id>
 ```
 
+任务完成后的 `video_url` / `thumbnail_url` 默认是本服务代理地址，例如 `https://your-domain.com/v1/videos/<task-id>/content?...`。后端会在访问代理地址时刷新 Runway 签名 URL 并转发视频流，因此业务方不会直接看到 Runway 原始签名 URL 或 JWT。生产部署请设置：
+
+```env
+PUBLIC_BASE_URL=https://your-domain.com
+VIDEO_PROXY_TOKEN_TTL_SECONDS=3600
+```
+
 ## 账号导入导出
 
 后台支持账号导入/导出 JSON。导出的 JSON 包含 `jwt` 和 `cookieHeader`，属于敏感凭证：
@@ -116,11 +124,11 @@ curl -H "Authorization: Bearer change-me" \
 - 建议只在内网或 HTTPS 后台中导入导出
 - 服务器备份时注意保护 `data/runway-api.sqlite`
 
-导入支持导出的 `{ "accounts": [...] }` 格式，也支持账号数组、单个账号对象、`authorization` / `cookie` / `team_id` / `asset_group_id` 等常见字段名。导入完成后后台会提示成功和失败条数；如果某条账号格式不对，会显示具体第几条失败。
+导入支持导出的 `{ "accounts": [...] }` 格式，也支持账号数组、单个账号对象、`authorization` / `cookie` / `team_id` / `asset_group_id` 等常见字段名；`asset_group_id` 会兼容导入但不是必填。导入完成后后台会提示成功和失败条数；如果某条账号格式不对，会显示具体第几条失败。
 
 ## Chrome 插件直接导入
 
-仓库内置本地自用插件：`runway-credential-extension/`。它会监听你浏览器里的 `api.runwayml.com` 请求，抓取 `Authorization`、`Cookie`、`teamId`、`assetGroupId`、`clientId` 和 source version，然后直接导入到你的 runway-api 服务器。
+仓库内置本地自用插件：`runway-credential-extension/`。它会监听你浏览器里的 `api.runwayml.com` 请求，抓取 `Authorization`、`Cookie`、`teamId`、`clientId` 和 source version，然后直接导入到你的 runway-api 服务器。
 
 安装方式：
 
@@ -136,11 +144,13 @@ curl -H "Authorization: Bearer change-me" \
 
 如果在 Codex 内嵌的自动化 Chrome 里测试，可能会看到“扩展程序已加载”但列表没有卡片。那通常是浏览器进程带了 `--disable-extensions` 启动参数，扩展被 Chrome 直接禁用；请用你正常打开的 Chrome 安装插件。部署到服务器时，本地插件仍然可以用：服务器地址填你的 HTTPS 域名，本地调试填 `http://127.0.0.1:8790`。
 
+如果插件导入时报 `Failed to fetch`，通常是插件没有远程域名权限、服务器地址不可达、HTTPS 证书异常或反向代理没有转发到 runway-api。更新插件代码后一定要在 `chrome://extensions/` 里点击插件卡片的“重新加载”；远程服务器建议填写 `https://你的域名`，不要用裸 HTTP。
+
 如果 Chrome 提示加载成功但列表没有卡片，优先检查三点：
 
 1. 确认选择的是包含 `manifest.json` 的目录本身，而不是仓库根目录。
 2. 地址栏打开 `chrome://policy`，确认没有 `ExtensionInstallBlocklist` 或禁用开发者扩展的策略。
-3. 如果仍然不显示，把 `runway-credential-extension/` 复制到一个普通目录，例如桌面，再重新加载。插件默认只申请 Runway 和本地服务权限，远端服务器导入由服务端 CORS 支持，不需要申请所有网站权限。
+3. 如果仍然不显示，把 `runway-credential-extension/` 复制到一个普通目录，例如桌面，再重新加载。
 
 ## 生产提示
 

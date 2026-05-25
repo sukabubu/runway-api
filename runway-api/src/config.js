@@ -19,6 +19,8 @@ export function loadConfig(env = process.env) {
     host: env.HOST || '127.0.0.1',
     port: int(env.PORT, 8787),
     internalApiKey: env.INTERNAL_API_KEY || 'change-me',
+    publicBaseUrl: env.PUBLIC_BASE_URL || '',
+    videoProxyTokenTtlSeconds: int(env.VIDEO_PROXY_TOKEN_TTL_SECONDS, 3600),
     adminUsername: env.ADMIN_USERNAME || 'admin',
     adminPassword: env.ADMIN_PASSWORD || 'admin',
     dataDir,

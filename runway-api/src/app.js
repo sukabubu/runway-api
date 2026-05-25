@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { Readable } from 'node:stream';
 import Fastify from 'fastify';
 import multipart from '@fastify/multipart';
 import { RUNWAY_MODELS, normalizeTaskInput } from './runway/config.js';
@@ -31,6 +32,7 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
     }
     if (isPublicRoute(pathname)) return;
     if (pathname.startsWith('/api/') || pathname.startsWith('/auth/') || pathname.startsWith('/admin/') || (pathname.startsWith('/v1/') && pathname !== '/v1/models')) {
+      if (isVideoContentRoute(pathname) && hasValidVideoAccessToken(request, pathname)) return;
       if (hasAdminSession(request) || hasApiKey(request)) return;
       return reply.code(401).send(pathname.startsWith('/v1/') ? toV1Error('unauthorized', '未登录或 API Key 不正确。') : { error: 'unauthorized' });
     }
@@ -366,7 +368,7 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
       status: request.query.status,
       limit: request.query.limit,
       offset: request.query.offset
-    })
+    }).map((task) => presentTaskForResponse(task, request, config))
   }));
 
   app.get('/v1/videos/generations', async (request) => ({
@@ -375,7 +377,7 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
       status: request.query.status,
       limit: request.query.limit,
       offset: request.query.offset
-    }).map(toV1VideoGeneration)
+    }).map((task) => toV1VideoGeneration(task, { request, config }))
   }));
 
   app.get('/v1/videos', async (request) => ({
@@ -384,25 +386,30 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
       status: request.query.status,
       limit: request.query.limit,
       offset: request.query.offset
-    }).map((task) => toV1Video(task))
+    }).map((task) => toV1Video(task, { request, config }))
   }));
 
   app.get('/tasks/:id', async (request, reply) => {
-    const task = db.getTask(request.params.id);
+    const task = await getFreshTaskForRead({ db, runway, id: request.params.id });
     if (!task) return reply.code(404).send({ error: 'task not found' });
-    return task;
+    return presentTaskForResponse(task, request, config);
   });
 
   app.get('/v1/videos/generations/:id', async (request, reply) => {
-    const task = db.getTask(request.params.id);
+    const task = await getFreshTaskForRead({ db, runway, id: request.params.id });
     if (!task) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
-    return toV1VideoGeneration(task);
+    return toV1VideoGeneration(task, { request, config });
   });
 
+  app.get('/v1/videos/generations/:id/content', async (request, reply) => streamTaskMedia({ db, runway, request, reply, kind: 'content' }));
+  app.get('/v1/videos/generations/:id/thumbnail', async (request, reply) => streamTaskMedia({ db, runway, request, reply, kind: 'thumbnail' }));
+  app.get('/v1/videos/:id/content', async (request, reply) => streamTaskMedia({ db, runway, request, reply, kind: 'content' }));
+  app.get('/v1/videos/:id/thumbnail', async (request, reply) => streamTaskMedia({ db, runway, request, reply, kind: 'thumbnail' }));
+
   app.get('/v1/videos/:id', async (request, reply) => {
-    const task = db.getTask(request.params.id);
+    const task = await getFreshTaskForRead({ db, runway, id: request.params.id });
     if (!task) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
-    return toV1Video(task);
+    return toV1Video(task, { request, config });
   });
 
   app.get('/tasks/:id/events', async (request, reply) => {
@@ -431,13 +438,13 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
   app.post('/v1/videos/generations', async (request, reply) => {
     const { fields, files } = await readTaskRequest(request, config.uploadDir);
     const task = createPendingTask({ db, fields, files });
-    return reply.code(202).send(toV1VideoGeneration(task));
+    return reply.code(202).send(toV1VideoGeneration(task, { request, config }));
   });
 
   app.post('/v1/videos', async (request, reply) => {
     const { fields, files } = await readTaskRequest(request, config.uploadDir);
     const task = createPendingTask({ db, fields, files });
-    return reply.code(202).send(toV1Video(task));
+    return reply.code(202).send(toV1Video(task, { request, config }));
   });
 
   app.post('/tasks/:id/retry', async (request, reply) => {
@@ -462,13 +469,13 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
     if (original.status !== 'failed') {
       return reply.code(409).send(toV1Error('invalid_state', '只有失败任务可以重试。'));
     }
-    return reply.code(202).send(toV1VideoGeneration(createRetryTask({ db, original })));
+    return reply.code(202).send(toV1VideoGeneration(createRetryTask({ db, original }), { request, config }));
   });
 
   app.post('/v1/videos/generations/:id/cancel', async (request, reply) => {
     const task = await cancelTask({ db, runway, id: request.params.id });
     if (!task) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
-    return toV1VideoGeneration(task);
+    return toV1VideoGeneration(task, { request, config });
   });
 
   app.post('/v1/videos/:id/retry', async (request, reply) => {
@@ -477,13 +484,13 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
     if (original.status !== 'failed') {
       return reply.code(409).send(toV1Error('invalid_state', '只有失败任务可以重试。'));
     }
-    return reply.code(202).send(toV1Video(createRetryTask({ db, original })));
+    return reply.code(202).send(toV1Video(createRetryTask({ db, original }), { request, config }));
   });
 
   app.post('/v1/videos/:id/cancel', async (request, reply) => {
     const task = await cancelTask({ db, runway, id: request.params.id });
     if (!task) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
-    return toV1Video(task);
+    return toV1Video(task, { request, config });
   });
 
   app.setErrorHandler((err, request, reply) => {
@@ -517,6 +524,10 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
     const auth = request.headers.authorization || '';
     const configured = db.getAdminConfig().api_key || config.internalApiKey;
     return auth === `Bearer ${configured}` || auth === `Bearer ${config.internalApiKey}`;
+  }
+
+  function hasValidVideoAccessToken(request, pathname) {
+    return verifyVideoAccessTokenForPath(pathname, request.query || {}, config);
   }
 
   return app;
@@ -928,6 +939,92 @@ async function cancelTask({ db, runway, id }) {
   });
 }
 
+async function getFreshTaskForRead({ db, runway, id }) {
+  const task = db.getTask(id);
+  if (!task || !shouldRefreshSignedUrls(task, runway)) return task;
+  const account = db.getAccount(task.accountId, { includeSecret: true });
+  if (!(account?.jwt || account?.cookieHeader)) return task;
+
+  try {
+    const update = await runway.pollTask(task.runwayTaskId, {
+      account,
+      operation: 'task_signed_url_refresh'
+    });
+    const patch = {
+      rawStatus: update.rawStatus ?? task.rawStatus,
+      progress: update.progress ?? task.progress,
+      rawResponse: update.rawResponse ?? task.rawResponse
+    };
+    if (update.videoUrl) patch.videoUrl = update.videoUrl;
+    if (update.thumbnailUrl) patch.thumbnailUrl = update.thumbnailUrl;
+    if (update.status && update.status !== task.status) patch.status = update.status;
+    if (update.error) patch.error = update.error;
+    return db.updateTask(task.id, patch) || task;
+  } catch (err) {
+    db.logRequest?.({
+      accountId: task.accountId,
+      operation: 'task_signed_url_refresh',
+      status: 'failed',
+      statusCode: err.status || err.statusCode || null,
+      message: err.message
+    });
+    return {
+      ...task,
+      signedUrlRefreshError: {
+        message: err.message,
+        code: err.code || null,
+        status: err.status || err.statusCode || null
+      }
+    };
+  }
+}
+
+function shouldRefreshSignedUrls(task, runway) {
+  return Boolean(
+    runway?.pollTask &&
+    task?.status === 'completed' &&
+    task.runwayTaskId &&
+    task.accountId
+  );
+}
+
+async function streamTaskMedia({ db, runway, request, reply, kind }) {
+  const task = await getFreshTaskForRead({ db, runway, id: request.params.id });
+  if (!task) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
+  if (task.status !== 'completed') return reply.code(409).send(toV1Error('task_not_completed', '任务还没有完成。'));
+
+  const sourceUrl = kind === 'thumbnail' ? task.thumbnailUrl : task.videoUrl;
+  if (!sourceUrl) {
+    return reply.code(404).send(toV1Error('media_not_found', kind === 'thumbnail' ? '缩略图链接不存在。' : '视频链接不存在。'));
+  }
+
+  const headers = {};
+  if (request.headers.range) headers.Range = request.headers.range;
+  const response = await fetch(sourceUrl, { headers });
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    return reply.code(502).send(toV1Error('media_proxy_failed', `视频代理请求失败：HTTP ${response.status}${text ? ` ${text.slice(0, 200)}` : ''}`));
+  }
+
+  for (const header of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'last-modified', 'etag']) {
+    const value = response.headers.get(header);
+    if (value) reply.header(header, value);
+  }
+  reply.header('Cache-Control', 'private, no-store');
+  reply.header('X-Content-Type-Options', 'nosniff');
+  return reply.code(response.status).send(Readable.fromWeb(response.body));
+}
+
+function presentTaskForResponse(task, request, config) {
+  const presented = {
+    ...task,
+    videoUrl: proxiedMediaUrl(task, 'content', request, config),
+    thumbnailUrl: proxiedMediaUrl(task, 'thumbnail', request, config)
+  };
+  delete presented.rawResponse;
+  return presented;
+}
+
 function normalizeAccountPatch(body) {
   const patch = {
     name: body.name,
@@ -972,11 +1069,15 @@ function toV1Model(model) {
   };
 }
 
-function toV1VideoGeneration(task) {
-  return toV1Video(task, 'video.generation');
+function toV1VideoGeneration(task, options = {}) {
+  return toV1Video(task, 'video.generation', options);
 }
 
-function toV1Video(task, object = 'video') {
+function toV1Video(task, object = 'video', options = {}) {
+  if (object && typeof object === 'object') {
+    options = object;
+    object = 'video';
+  }
   return {
     id: task.id,
     object,
@@ -987,18 +1088,21 @@ function toV1Video(task, object = 'video') {
     account_id: task.accountId,
     account_name: task.accountName,
     progress: task.progress,
-    video_url: task.videoUrl,
-    thumbnail_url: task.thumbnailUrl,
+    video_url: proxiedMediaUrl(task, 'content', options.request, options.config),
+    thumbnail_url: proxiedMediaUrl(task, 'thumbnail', options.request, options.config),
     error: ['failed', 'cancelled'].includes(task.status)
       ? {
           message: task.errorSummary || task.errorCode || (task.status === 'cancelled' ? '任务已取消' : '任务失败'),
           code: task.errorCode,
           category: task.errorCategory,
+          reason: task.errorReason,
+          runway_message: task.errorMessage,
           detail: task.errorDetail || task.error
         }
       : null,
     metadata: {
       raw_status: task.rawStatus,
+      signed_url_refresh_error: task.signedUrlRefreshError || null,
       prompt: task.prompt,
       duration: task.duration,
       resolution: task.resolution,
@@ -1039,6 +1143,55 @@ function toV1TaskStatus(status) {
 function toUnixSeconds(value) {
   const time = Date.parse(value);
   return Number.isFinite(time) ? Math.floor(time / 1000) : 0;
+}
+
+function proxiedMediaUrl(task, kind, request, config = {}) {
+  const hasSource = kind === 'thumbnail' ? task.thumbnailUrl : task.videoUrl;
+  if (!hasSource || !request) return hasSource || null;
+  const expires = Math.floor(Date.now() / 1000) + (Number(config.videoProxyTokenTtlSeconds) || 3600);
+  const token = signVideoAccessToken(task.id, kind, expires, config);
+  const baseUrl = publicBaseUrl(request, config);
+  const suffix = kind === 'thumbnail' ? 'thumbnail' : 'content';
+  return `${baseUrl}/v1/videos/${encodeURIComponent(task.id)}/${suffix}?expires=${expires}&token=${encodeURIComponent(token)}`;
+}
+
+function publicBaseUrl(request, config = {}) {
+  if (config.publicBaseUrl) return String(config.publicBaseUrl).replace(/\/+$/, '');
+  const proto = String(request.headers['x-forwarded-proto'] || request.protocol || 'http').split(',')[0].trim();
+  const host = String(request.headers['x-forwarded-host'] || request.headers.host || `127.0.0.1:${config.port || 8787}`).split(',')[0].trim();
+  return `${proto}://${host}`;
+}
+
+function signVideoAccessToken(taskId, kind, expires, config = {}, db = null) {
+  return createHmac('sha256', videoAccessSecret(config, db))
+    .update(videoAccessPayload(taskId, kind, expires))
+    .digest('base64url');
+}
+
+function verifyVideoAccessTokenForPath(pathname, query = {}, config = {}, db = null) {
+  const match = String(pathname).match(/^\/v1\/videos(?:\/generations)?\/([^/]+)\/(content|thumbnail)$/);
+  if (!match) return false;
+  const taskId = decodeURIComponent(match[1]);
+  const kind = match[2] === 'thumbnail' ? 'thumbnail' : 'content';
+  const expires = Number(query.expires);
+  const token = String(query.token || '');
+  if (!Number.isFinite(expires) || expires < Math.floor(Date.now() / 1000) || !token) return false;
+  const expected = signVideoAccessToken(taskId, kind, expires, config, db);
+  return safeEqual(token, expected);
+}
+
+function videoAccessPayload(taskId, kind, expires) {
+  return `${taskId}:${kind}:${expires}`;
+}
+
+function videoAccessSecret(config = {}, db = null) {
+  return db?.getAdminConfig?.().api_key || config.internalApiKey || 'change-me';
+}
+
+function safeEqual(a, b) {
+  const left = Buffer.from(String(a));
+  const right = Buffer.from(String(b));
+  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 function toV1Error(code, message) {
@@ -1096,14 +1249,24 @@ function normalizeImportedAccount(item, index, db) {
     cookieHeader: normalizeCookieHeader(pickFirst(item, credentials, ['cookieHeader', 'cookie_header', 'cookie', 'cookies'])),
     teamId: pickFirst(item, credentials, ['teamId', 'team_id', 'team']),
     assetGroupId: pickFirst(item, credentials, ['assetGroupId', 'asset_group_id', 'assetGroup']),
-    clientId: pickFirst(item, credentials, ['clientId', 'client_id', 'client']),
-    sourceApplicationVersion: pickFirst(item, credentials, [
+    clientId: normalizeOptionalImportString(pickFirst(item, credentials, [
+      'clientId',
+      'client_id',
+      'clientID',
+      'xRunwayClientId',
+      'x_runway_client_id',
+      'x-runway-client-id'
+    ])),
+    sourceApplicationVersion: normalizeOptionalImportString(pickFirst(item, credentials, [
       'sourceApplicationVersion',
       'source_application_version',
       'sourceVersion',
       'source_version',
-      'runwaySourceVersion'
-    ]),
+      'runwaySourceVersion',
+      'xRunwaySourceApplicationVersion',
+      'x_runway_source_application_version',
+      'x-runway-source-application-version'
+    ])),
     isActive: pickFirst(item, credentials, ['isActive', 'is_active', 'enabled', 'active']) ?? 1,
     maxConcurrent: pickFirst(item, credentials, ['maxConcurrent', 'max_concurrent', 'concurrency']),
     proxyId: pickFirst(item, credentials, ['proxyId', 'proxy_id']) || null,
@@ -1182,6 +1345,16 @@ function normalizeCookieHeader(value) {
   return raw.replace(/^Cookie:\s*/i, '').trim();
 }
 
+function normalizeOptionalImportString(value) {
+  if (value == null || value === '') return null;
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    const text = String(value).trim();
+    if (!text || text === '[object Object]') return null;
+    return text;
+  }
+  return null;
+}
+
 function sanitizeFilename(filename) {
   const base = path.basename(filename);
   return base.replace(/[^\p{L}\p{N}._-]/gu, '_') || 'upload.bin';
@@ -1200,6 +1373,10 @@ function classifyUpload(mimeType, filename) {
 
 function isPublicRoute(pathname) {
   return pathname === '/health' || pathname === '/models' || pathname === '/v1/models' || pathname === '/admin/login' || pathname === '/admin/me' || isPublicAsset(pathname);
+}
+
+function isVideoContentRoute(pathname) {
+  return /^\/v1\/videos(?:\/generations)?\/[^/]+\/(?:content|thumbnail)$/.test(String(pathname));
 }
 
 function isPublicAsset(pathname) {

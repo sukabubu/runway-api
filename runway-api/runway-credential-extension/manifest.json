@@ -11,6 +11,8 @@
   "host_permissions": [
     "https://app.runwayml.com/*",
     "https://api.runwayml.com/*",
+    "https://*/*",
+    "http://*/*",
     "http://127.0.0.1/*",
     "http://localhost/*"
   ],

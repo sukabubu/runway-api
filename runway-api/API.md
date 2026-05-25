@@ -154,6 +154,15 @@ curl -H "Authorization: Bearer change-me" \
 | `failed` | 失败，读取 `error.message` |
 | `cancelled` | 已取消 |
 
+完成任务的 `video_url` / `thumbnail_url` 默认返回本服务的流式代理 URL，不直接返回 Runway 原始签名 URL。访问代理 URL 时，后端会刷新 Runway task，拿最新签名地址并转发视频流。
+
+```text
+GET /v1/videos/:id/content
+GET /v1/videos/:id/thumbnail
+```
+
+代理 URL 会带一个本服务生成的短期 `token`，默认有效期 `3600` 秒；过期后重新查询 `GET /v1/videos/:id` 即可拿到新的代理 URL。生产部署请设置 `PUBLIC_BASE_URL=https://你的域名`，否则返回的 URL 会使用当前请求的 Host。
+
 ### `GET /v1/videos`
 
 ```bash
@@ -544,10 +553,10 @@ while True:
 `POST /api/accounts/import` 支持以下 JSON 结构：
 
 ```json
-{ "accounts": [{ "name": "账号1", "jwt": "...", "cookieHeader": "...", "teamId": 1, "assetGroupId": "..." }] }
+{ "accounts": [{ "name": "账号1", "jwt": "...", "cookieHeader": "...", "teamId": 1 }] }
 ```
 
-也支持直接传数组、`{ "account": {...} }` 或单个账号对象。字段兼容 `authorization`、`cookie`、`team_id`、`asset_group_id`、`sourceVersion`、嵌套 `credentials` 等常见格式；重复 `id` 会自动生成新账号 ID。返回值会包含 `imported`、`skipped` 和逐条 `errors`，方便定位导入失败原因。
+也支持直接传数组、`{ "account": {...} }` 或单个账号对象。字段兼容 `authorization`、`cookie`、`team_id`、`asset_group_id`、`sourceVersion`、嵌套 `credentials` 等常见格式；`asset_group_id` 兼容但不是必填。重复 `id` 会自动生成新账号 ID。返回值会包含 `imported`、`skipped` 和逐条 `errors`，方便定位导入失败原因。
 
 ### `POST /api/plugin/accounts/import`
 
@@ -558,4 +567,4 @@ Chrome 插件专用导入接口，鉴权仍然使用 `Authorization: Bearer <INT
 1. 确保后台已有至少一个 `ready: true` 的 Runway 账号。
 2. 调用 `POST /v1/videos` 创建任务。
 3. 每 5 到 10 秒调用 `GET /v1/videos/:id` 查询状态。
-4. 当 `status` 为 `completed` 时读取 `video_url`。
+4. 当 `status` 为 `completed` 时读取 `video_url`，它是本服务代理 URL，不是 Runway 原始签名 URL。

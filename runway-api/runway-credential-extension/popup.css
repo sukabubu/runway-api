@@ -116,6 +116,27 @@ button:disabled {
   cursor: wait;
 }
 
+.feedback {
+  margin: 0 0 10px;
+  padding: 9px 10px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  color: #1e3a8a;
+  background: #eff6ff;
+}
+
+.feedback.success {
+  border-color: #bbf7d0;
+  color: #14532d;
+  background: #f0fdf4;
+}
+
+.feedback.error {
+  border-color: #fecaca;
+  color: #7f1d1d;
+  background: #fef2f2;
+}
+
 pre {
   max-height: 190px;
   margin: 0;
