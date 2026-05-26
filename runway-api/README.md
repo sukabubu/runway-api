@@ -130,6 +130,12 @@ VIDEO_PROXY_TOKEN_TTL_SECONDS=3600
 
 仓库内置本地自用插件：`runway-credential-extension/`。它会监听你浏览器里的 `api.runwayml.com` 请求，抓取 `Authorization`、`Cookie`、`teamId`、`clientId` 和 source version，然后直接导入到你的 runway-api 服务器。
 
+直接下载插件压缩包：
+
+[runway-credential-extension.zip](https://github.com/sukabubu/runway-api/raw/main/runway-api/runway-credential-extension.zip)
+
+下载后解压，Chrome 加载解压出来的 `runway-credential-extension` 文件夹。
+
 安装方式：
 
 1. Chrome 打开 `chrome://extensions/`
