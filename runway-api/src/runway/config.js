@@ -82,13 +82,20 @@ export function mapRunwayStatus(rawStatus) {
 
 export function normalizeTaskInput(input = {}) {
   const model = findRunwayModel(input.model || DEFAULT_TASK_CONFIG.model);
-  const duration = Number(input.duration ?? DEFAULT_TASK_CONFIG.duration);
+  const openAiSize = parseOpenAiSize(input.size);
+  const duration = Number(input.duration ?? input.seconds ?? DEFAULT_TASK_CONFIG.duration);
+  const prompt = String(input.prompt || '').trim();
+  if (prompt.length > 3500) {
+    const err = new Error('Too big: expected string to have <=3500 characters');
+    err.statusCode = 400;
+    throw err;
+  }
   const config = {
-    prompt: String(input.prompt || '').trim(),
+    prompt,
     model: model.id,
     duration: model.durations.includes(duration) ? duration : model.durations[0],
-    resolution: model.resolutions.includes(input.resolution) ? input.resolution : model.resolutions[0],
-    aspectRatio: model.aspectRatios.includes(input.aspectRatio) ? input.aspectRatio : model.aspectRatios[0],
+    resolution: model.resolutions.includes(input.resolution ?? openAiSize?.resolution) ? (input.resolution ?? openAiSize.resolution) : model.resolutions[0],
+    aspectRatio: model.aspectRatios.includes(input.aspectRatio ?? input.aspect_ratio ?? openAiSize?.aspectRatio) ? (input.aspectRatio ?? input.aspect_ratio ?? openAiSize.aspectRatio) : model.aspectRatios[0],
     generateAudio: input.generateAudio == null ? DEFAULT_TASK_CONFIG.generateAudio : toBoolean(input.generateAudio),
     exploreMode: input.exploreMode == null ? DEFAULT_TASK_CONFIG.exploreMode : toBoolean(input.exploreMode)
   };
@@ -100,6 +107,45 @@ export function normalizeTaskInput(input = {}) {
   if (!model.supportsAudio) config.generateAudio = false;
   if (!model.supportsExploreMode) config.exploreMode = false;
   return config;
+}
+
+function parseOpenAiSize(value) {
+  if (!value) return null;
+  const match = String(value).trim().toLowerCase().match(/^(\d+)x(\d+)$/);
+  if (!match) return null;
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (!width || !height) return null;
+  const longSide = Math.max(width, height);
+  const shortSide = Math.min(width, height);
+  const resolution = nearestResolution(shortSide);
+  return {
+    resolution,
+    aspectRatio: nearestAspectRatio(longSide / shortSide, width >= height)
+  };
+}
+
+function nearestResolution(value) {
+  return [480, 720, 1080].reduce((best, current) => (
+    Math.abs(current - value) < Math.abs(best - value) ? current : best
+  ), 480) + 'p';
+}
+
+function nearestAspectRatio(ratio, landscape) {
+  const candidates = landscape
+    ? [
+        ['16:9', 16 / 9],
+        ['4:3', 4 / 3],
+        ['1:1', 1]
+      ]
+    : [
+        ['9:16', 16 / 9],
+        ['3:4', 4 / 3],
+        ['1:1', 1]
+      ];
+  return candidates.reduce((best, current) => (
+    Math.abs(current[1] - ratio) < Math.abs(best[1] - ratio) ? current : best
+  ))[0];
 }
 
 function toBoolean(value) {

@@ -1125,7 +1125,7 @@ function toV1Model(model) {
     id: model.id,
     object: 'model',
     created: 0,
-    owned_by: 'runway',
+    owned_by: 'video-api',
     name: model.label,
     taskType: model.taskType,
     durations: model.durations,
@@ -1220,10 +1220,7 @@ function publicErrorCode(task) {
 }
 
 function publicErrorMessage(task) {
-  const summary = task.errorSummary || task.errorCode || (task.status === 'cancelled' ? '任务已取消' : '任务失败');
-  const reason = publicErrorReason(task);
-  if (!reason || reason === summary || task.status === 'cancelled') return summary;
-  return `${summary}：${reason}`;
+  return publicErrorReason(task);
 }
 
 function publicErrorReason(task) {

@@ -57,7 +57,7 @@ describe('app frontend and auth', () => {
     expect(JSON.parse(v1Models.body)).toMatchObject({
       object: 'list',
       data: expect.arrayContaining([
-        expect.objectContaining({ id: 'seedance_2', object: 'model', owned_by: 'runway' })
+        expect.objectContaining({ id: 'seedance_2', object: 'model', owned_by: 'video-api' })
       ])
     });
 
@@ -729,8 +729,9 @@ describe('OpenAI compatible video API', () => {
         param: null
       }
     });
-    expect(body.error.message).toContain('提示词未通过内容审核');
+    expect(body.error.message).not.toContain('提示词未通过内容审核');
     expect(body.error.message).toContain('sexual act and physical assault');
+    expect(body.error.message).toBe(body.error.reason);
     expect(body.error.reason).toContain('sexual act and physical assault');
     expect(body.error.reason).not.toContain('Runway');
     expect(body.error.reason).not.toContain('https://signed.example');

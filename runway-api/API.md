@@ -1,34 +1,24 @@
 # 视频生成 API 调用文档
 
-本文档只说明外部业务方如何调用本服务生成视频。默认服务地址：
+本文档仅面向业务调用方，说明如何使用 OpenAI 兼容接口创建、查询和下载视频。
+
+## 基础信息
+
+默认请求地址：
 
 ```text
 http://127.0.0.1:8790
 ```
 
-## 鉴权
-
-视频调用接口需要业务 API Key：
+所有 `/v1` 接口都使用 Bearer Token 鉴权：
 
 ```http
 Authorization: Bearer <API_KEY>
 ```
 
-默认值是：
+除 `GET /v1/models` 外，其它接口都需要鉴权。
 
-```text
-change-me
-```
-
-如果你在后台“系统配置”里改过 API Key，以后台配置为准。
-
-## 1. OpenAI 兼容接口
-
-外部业务方优先使用 `/v1/...` 接口，统一使用：
-
-```http
-Authorization: Bearer <API_KEY>
-```
+## 模型列表
 
 ### `GET /v1/models`
 
@@ -36,7 +26,7 @@ Authorization: Bearer <API_KEY>
 curl http://127.0.0.1:8790/v1/models
 ```
 
-返回 OpenAI 风格模型列表：
+响应示例：
 
 ```json
 {
@@ -45,21 +35,92 @@ curl http://127.0.0.1:8790/v1/models
     {
       "id": "seedance_2",
       "object": "model",
-      "owned_by": "runway"
+      "created": 0,
+      "owned_by": "video-api",
+      "name": "Seedance 2.0"
     }
   ]
 }
 ```
 
+## 创建视频
+
 ### `POST /v1/videos`
 
-文生视频可以直接传 JSON。参考素材优先传 URL，字段支持 `media_urls`、`mediaUrls`、`reference_urls`、`referenceUrls`，可以是数组、逗号分隔或换行分隔字符串。
+支持 `application/json` 和 `multipart/form-data` 两种请求格式。推荐优先使用 URL 传参考素材。
 
-未手动命名的素材会按上传顺序自动命名：图片是 `IMG_1`、`IMG_2`，视频是 `VID_1`、`VID_2`。因此可以直接在提示词里写 `@IMG_1`、`@VID_1`；如果传了 `references[].name`，则优先使用你指定的名字。
+### JSON 请求
+
+```bash
+curl -X POST http://127.0.0.1:8790/v1/videos \
+  -H "Authorization: Bearer <API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "seedance_2",
+    "prompt": "A cinematic product video with soft studio lighting and a slow camera push-in.",
+    "seconds": "5",
+    "size": "1280x720",
+    "media_urls": [
+      "https://example.com/reference-image.jpg",
+      "https://example.com/reference-video.mp4"
+    ]
+  }'
+```
+
+### Multipart 请求
+
+```bash
+curl -X POST http://127.0.0.1:8790/v1/videos \
+  -H "Authorization: Bearer <API_KEY>" \
+  -F "model=seedance_2" \
+  -F "prompt=A cinematic product video with soft studio lighting." \
+  -F "seconds=5" \
+  -F "size=1280x720" \
+  -F "media_urls=https://example.com/reference-image.jpg" \
+  -F "media[]=@/absolute/path/to/reference-video.mp4"
+```
+
+### 请求字段
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `prompt` | string | 是 | 视频提示词，也兼容 `input`；最大 `3500` 个字符 |
+| `model` | string | 否 | 模型 ID，不传使用默认模型 |
+| `seconds` | string/number | 否 | 视频秒数，也兼容 `duration` |
+| `size` | string | 否 | 视频尺寸，例如 `1280x720`、`720x1280`、`1024x1024` |
+| `media_urls` | string/string[] | 否 | 参考素材 URL，也兼容 `mediaUrls`、`reference_urls`、`referenceUrls` |
+| `references` | array | 否 | 带名称的参考素材列表 |
+| `media[]` | file[] | 否 | multipart 上传的本地参考素材 |
+
+`media_urls` 可以传数组，也可以传逗号分隔或换行分隔字符串。
+
+`prompt` / `input` 超过 `3500` 个字符会返回请求错误：
 
 ```json
 {
-  "prompt": "使用 @IMG_1 作为主体外观，使用 @VID_1 作为运动参考",
+  "error": {
+    "message": "Too big: expected string to have <=3500 characters",
+    "type": "invalid_request_error",
+    "param": null,
+    "code": "request_failed"
+  }
+}
+```
+
+### 命名参考素材
+
+未命名的参考素材会按上传顺序自动命名：
+
+| 素材类型 | 自动名称 |
+| --- | --- |
+| 图片 | `IMG_1`、`IMG_2`、`IMG_3` |
+| 视频 | `VID_1`、`VID_2`、`VID_3` |
+
+因此可以在提示词里引用：
+
+```json
+{
+  "prompt": "Use @IMG_1 as the subject appearance and @VID_1 as the motion reference.",
   "media_urls": [
     "https://example.com/subject.jpg",
     "https://example.com/motion.mp4"
@@ -67,61 +128,21 @@ curl http://127.0.0.1:8790/v1/models
 }
 ```
 
-如果你想按 Runway 网页习惯在提示词里写 `@素材名`，用 `references` 传带名字的素材：
+也可以使用 `references` 显式命名：
 
 ```json
 {
-  "prompt": "使用 @主体 作为主体外观，使用 @动作 作为运动参考",
+  "prompt": "Use @subject as the character and @motion as the movement reference.",
   "references": [
-    { "name": "主体", "url": "https://example.com/subject.jpg" },
-    { "name": "动作", "url": "https://example.com/motion.mp4" }
+    { "name": "subject", "url": "https://example.com/subject.jpg" },
+    { "name": "motion", "url": "https://example.com/motion.mp4" }
   ]
 }
 ```
 
-说明：服务端会用 `name` 作为素材文件名下载并上传，prompt 里的 `@主体` 会原样提交给 Runway；真正的引用对象仍然通过上传后的 `referenceImages` / `referenceVideos` 传给 Runway。
+### 成功响应
 
-URL 素材要求：
-
-- 只支持 `http` / `https`
-- 只支持图片和视频，不支持音频
-- 单个素材最大 `200MB`
-- 服务会先下载到本地 `UPLOAD_DIR`，再上传到 Runway
-
-```bash
-curl -X POST http://127.0.0.1:8790/v1/videos \
-  -H "Authorization: Bearer change-me" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "seedance_2",
-    "prompt": "a cinematic shot of waves at sunset, handheld camera, realistic lighting",
-    "duration": 5,
-    "resolution": "720p",
-    "aspectRatio": "16:9",
-    "generateAudio": true,
-    "exploreMode": true,
-    "media_urls": [
-      "https://example.com/reference.jpg",
-      "https://example.com/motion.mp4"
-    ]
-  }'
-```
-
-如果业务方必须上传本地文件，也可以使用 `multipart/form-data`；URL 和文件可以同时传：
-
-```bash
-curl -X POST http://127.0.0.1:8790/v1/videos \
-  -H "Authorization: Bearer change-me" \
-  -F "model=seedance_2" \
-  -F "prompt=animate this reference with a slow dolly-in camera move" \
-  -F "duration=5" \
-  -F "resolution=720p" \
-  -F "aspectRatio=16:9" \
-  -F "media_urls=https://example.com/reference.jpg" \
-  -F "media[]=@/absolute/path/to/reference.mp4"
-```
-
-成功响应：
+创建成功后会返回任务对象，后续通过查询接口获取结果。
 
 ```json
 {
@@ -130,7 +151,7 @@ curl -X POST http://127.0.0.1:8790/v1/videos \
   "created": 1779190000,
   "created_at": 1779190000,
   "model": "seedance_2",
-  "prompt": "animate this reference with a slow dolly-in camera move",
+  "prompt": "A cinematic product video with soft studio lighting.",
   "seconds": "5",
   "size": "1280x720",
   "status": "queued",
@@ -139,7 +160,7 @@ curl -X POST http://127.0.0.1:8790/v1/videos \
   "thumbnail_url": null,
   "error": null,
   "metadata": {
-    "prompt": "animate this reference with a slow dolly-in camera move",
+    "prompt": "A cinematic product video with soft studio lighting.",
     "duration": 5,
     "resolution": "720p",
     "aspect_ratio": "16:9"
@@ -147,442 +168,244 @@ curl -X POST http://127.0.0.1:8790/v1/videos \
 }
 ```
 
+## 查询视频
+
 ### `GET /v1/videos/:id`
 
 ```bash
-curl -H "Authorization: Bearer change-me" \
-  http://127.0.0.1:8790/v1/videos/<task-id>
+curl -H "Authorization: Bearer <API_KEY>" \
+  http://127.0.0.1:8790/v1/videos/b3c9e2c4-4d4d-4a97-9d79-000000000000
 ```
 
-状态值会映射为 OpenAI 风格：
-
-| status | 含义 |
-| --- | --- |
-| `queued` | 本地或 Runway 排队中 |
-| `in_progress` | 提交中或生成中 |
-| `completed` | 已完成，读取 `video_url` |
-| `failed` | 失败，读取 `error.message` |
-| `cancelled` | 已取消 |
-
-完成任务的 `video_url` / `thumbnail_url` 默认返回本服务的流式代理 URL，不直接返回 Runway 原始签名 URL。访问代理 URL 时，后端会刷新 Runway task，拿最新签名地址并转发视频流。
-
-业务 `/v1` 接口不会返回账号、内部任务、上游服务名称、原始状态、原始错误 JSON 或素材内部链接等实现细节；这些信息只在后台管理接口和请求日志里用于排查。
-
-```text
-GET /v1/videos/:id/content
-GET /v1/videos/:id/thumbnail
-```
-
-代理 URL 会带一个本服务生成的短期 `token`，默认有效期 `3600` 秒；过期后重新查询 `GET /v1/videos/:id` 即可拿到新的代理 URL。生产部署请设置 `PUBLIC_BASE_URL=https://你的域名`，否则返回的 URL 会使用当前请求的 Host。
-
-### `GET /v1/videos`
-
-```bash
-curl -H "Authorization: Bearer change-me" \
-  "http://127.0.0.1:8790/v1/videos?status=completed&limit=20"
-```
-
-### `POST /v1/videos/:id/retry`
-
-```bash
-curl -X POST -H "Authorization: Bearer change-me" \
-  http://127.0.0.1:8790/v1/videos/<task-id>/retry
-```
-
-只能重试失败任务。
-
-### `POST /v1/videos/:id/cancel`
-
-```bash
-curl -X POST -H "Authorization: Bearer change-me" \
-  http://127.0.0.1:8790/v1/videos/<task-id>/cancel
-```
-
-可取消 `queued` / `in_progress` 任务。已提交到 Runway 的任务会尝试同步取消；如果 Runway 内部取消接口不可用，本地任务仍会标记为 `cancelled`，详情事件里会保留 Runway 取消失败原因。
-
-## 2. 可用模型
-
-### `GET /models`
-
-```bash
-curl http://127.0.0.1:8790/models
-```
-
-当前主要模型：
-
-| model | 说明 | 支持参考图 | 支持参考视频 | 生成音轨 |
-| --- | --- | --- | --- | --- |
-| `seedance_2` | Seedance 2.0 | 是 | 是 | 是 |
-| `gen4` | Gen-4 | 是 | 否 | 否 |
-
-`seedance_2` 支持：
-
-- `duration`: `5` 到 `15` 的整数秒
-- `resolution`: `480p`, `720p`, `1080p`
-- `aspectRatio`: `16:9`, `9:16`, `1:1`, `4:3`, `3:4`
-- 图片参考最多 `9` 张
-- 视频参考最多 `3` 个
-- 不支持上传音频。`generateAudio` 表示是否生成结果音轨，不是上传音频。
-
-## 3. 旧版任务接口
-
-以下 `/tasks` 接口仅为历史兼容保留，不建议新接入使用。新接入统一使用上面的 OpenAI 兼容 `/v1/videos`。
-
-## 4. 创建视频任务
-
-### `POST /tasks`
-
-请求格式：`multipart/form-data`
-
-字段：
-
-| 字段 | 必填 | 示例 | 说明 |
-| --- | --- | --- | --- |
-| `prompt` | 是 | `a cinematic product shot` | 视频提示词 |
-| `model` | 否 | `seedance_2` | 默认 `seedance_2` |
-| `duration` | 否 | `5` | 秒数 |
-| `resolution` | 否 | `720p` | 分辨率 |
-| `aspectRatio` | 否 | `16:9` | 画面比例 |
-| `generateAudio` | 否 | `true` | 是否生成结果音轨 |
-| `exploreMode` | 否 | `true` | 是否开启探索模式 |
-| `accountId` | 否 | `auto` | 指定 Runway 账号；不填或 `auto` 为自动负载 |
-| `media[]` | 否 | `@ref.jpg`, `@ref.mp4` | 参考素材，支持图片和视频，不支持音频 |
-
-### 文生视频
-
-```bash
-curl -X POST http://127.0.0.1:8790/tasks \
-  -H "Authorization: Bearer change-me" \
-  -F "prompt=a cinematic shot of waves at sunset, handheld camera, realistic lighting" \
-  -F "model=seedance_2" \
-  -F "duration=5" \
-  -F "resolution=720p" \
-  -F "aspectRatio=16:9" \
-  -F "generateAudio=true" \
-  -F "exploreMode=true"
-```
-
-### 图生视频
-
-```bash
-curl -X POST http://127.0.0.1:8790/tasks \
-  -H "Authorization: Bearer change-me" \
-  -F "prompt=animate this product shot with a slow dolly-in camera move" \
-  -F "model=seedance_2" \
-  -F "duration=5" \
-  -F "resolution=720p" \
-  -F "aspectRatio=16:9" \
-  -F "media[]=@/absolute/path/to/reference.jpg"
-```
-
-### 视频参考生成
-
-```bash
-curl -X POST http://127.0.0.1:8790/tasks \
-  -H "Authorization: Bearer change-me" \
-  -F "prompt=continue the motion and keep the same subject identity" \
-  -F "model=seedance_2" \
-  -F "duration=5" \
-  -F "resolution=720p" \
-  -F "aspectRatio=16:9" \
-  -F "media[]=@/absolute/path/to/reference.mp4"
-```
-
-### 图片 + 视频参考
-
-```bash
-curl -X POST http://127.0.0.1:8790/tasks \
-  -H "Authorization: Bearer change-me" \
-  -F "prompt=use the image as subject reference and the video as motion reference" \
-  -F "model=seedance_2" \
-  -F "duration=10" \
-  -F "resolution=720p" \
-  -F "aspectRatio=16:9" \
-  -F "media[]=@/absolute/path/to/subject.jpg" \
-  -F "media[]=@/absolute/path/to/motion.mp4"
-```
-
-成功响应：
-
-```json
-{
-  "id": "b3c9e2c4-4d4d-4a97-9d79-000000000000",
-  "runwayTaskId": null,
-  "status": "pending",
-  "accountId": null
-}
-```
-
-这里的 `id` 是本地任务 ID，后续用它查询任务状态。
-
-## 5. 查询任务状态
-
-### `GET /tasks/:id`
-
-```bash
-curl -H "Authorization: Bearer change-me" \
-  http://127.0.0.1:8790/tasks/<task-id>
-```
-
-完成前响应示例：
-
-```json
-{
-  "id": "b3c9e2c4-4d4d-4a97-9d79-000000000000",
-  "runwayTaskId": "runway-task-id",
-  "status": "generating",
-  "progress": 42,
-  "videoUrl": null,
-  "thumbnailUrl": null,
-  "error": null
-}
-```
-
-完成后响应示例：
+完成响应示例：
 
 ```json
 {
   "id": "b3c9e2c4-4d4d-4a97-9d79-000000000000",
   "object": "video",
+  "created": 1779190000,
   "created_at": 1779190000,
   "model": "seedance_2",
-  "prompt": "animate this reference with a slow dolly-in camera move",
+  "prompt": "A cinematic product video with soft studio lighting.",
   "seconds": "5",
   "size": "1280x720",
   "status": "completed",
   "progress": 100,
   "video_url": "https://api.example.com/v1/videos/b3c9e2c4-4d4d-4a97-9d79-000000000000/content?expires=...",
   "thumbnail_url": "https://api.example.com/v1/videos/b3c9e2c4-4d4d-4a97-9d79-000000000000/thumbnail?expires=...",
-  "error": null
+  "error": null,
+  "metadata": {
+    "prompt": "A cinematic product video with soft studio lighting.",
+    "duration": 5,
+    "resolution": "720p",
+    "aspect_ratio": "16:9"
+  }
 }
 ```
 
-任务失败示例：
+### 状态值
+
+| status | 说明 |
+| --- | --- |
+| `queued` | 等待处理 |
+| `in_progress` | 正在生成 |
+| `completed` | 已完成 |
+| `failed` | 失败 |
+| `cancelled` | 已取消 |
+
+## 下载视频
+
+任务完成后，直接使用查询结果里的 `video_url` 下载视频，使用 `thumbnail_url` 下载封面。
+
+```bash
+curl -L -o output.mp4 \
+  "https://api.example.com/v1/videos/b3c9e2c4-4d4d-4a97-9d79-000000000000/content?expires=..."
+```
+
+如果下载链接失效，重新调用 `GET /v1/videos/:id` 获取新的链接。
+
+## 查询列表
+
+### `GET /v1/videos`
+
+```bash
+curl -H "Authorization: Bearer <API_KEY>" \
+  "http://127.0.0.1:8790/v1/videos?status=completed&limit=20"
+```
+
+查询参数：
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `status` | string | 可选，按状态筛选 |
+| `limit` | number | 可选，返回数量 |
+| `offset` | number | 可选，分页偏移 |
+
+响应示例：
+
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "b3c9e2c4-4d4d-4a97-9d79-000000000000",
+      "object": "video",
+      "status": "completed",
+      "video_url": "https://api.example.com/v1/videos/b3c9e2c4-4d4d-4a97-9d79-000000000000/content?expires=...",
+      "thumbnail_url": "https://api.example.com/v1/videos/b3c9e2c4-4d4d-4a97-9d79-000000000000/thumbnail?expires=...",
+      "error": null
+    }
+  ]
+}
+```
+
+## 取消任务
+
+### `POST /v1/videos/:id/cancel`
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer <API_KEY>" \
+  http://127.0.0.1:8790/v1/videos/b3c9e2c4-4d4d-4a97-9d79-000000000000/cancel
+```
+
+响应会返回最新任务对象。
+
+## 重试任务
+
+### `POST /v1/videos/:id/retry`
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer <API_KEY>" \
+  http://127.0.0.1:8790/v1/videos/b3c9e2c4-4d4d-4a97-9d79-000000000000/retry
+```
+
+仅失败任务可重试。响应会返回新的任务对象。
+
+## 错误格式
+
+接口错误和任务失败都使用 OpenAI 风格错误对象。
+
+### 请求错误示例
+
+```json
+{
+  "error": {
+    "message": "未登录或 API Key 不正确。",
+    "type": "invalid_request_error",
+    "param": null,
+    "code": "unauthorized"
+  }
+}
+```
+
+### 任务失败示例
 
 ```json
 {
   "id": "b3c9e2c4-4d4d-4a97-9d79-000000000000",
   "object": "video",
-  "created_at": 1779190000,
   "status": "failed",
   "error": {
-    "message": "参考素材未通过内容审核：参考素材包含不符合内容政策的画面或描述，请更换素材后重试。",
+    "message": "The prompt describes content that is not allowed.",
     "code": "content_policy_violation",
     "type": "video_generation_error",
     "param": null,
-    "reason": "参考素材包含不符合内容政策的画面或描述，请更换素材后重试。"
+    "reason": "The prompt describes content that is not allowed."
   }
 }
 ```
 
-失败时优先给业务方展示 `error.message`。这个字段采用 OpenAI 常见错误对象结构，包含中文摘要和具体原因；如果下游需要单独拿详细审核解释，可以读取 `error.reason`。`reason` 会尽量保留审核或失败说明，但会脱敏 URL、凭证、账号和上游实现信息。管理后台仍可查看完整内部详情和请求日志。
+任务失败时，`error.message` 和 `error.reason` 会优先返回失败详情；不会把失败原因改写成概括性的中文解释。
 
-常见中文摘要：
+下游建议：
 
-| errorSummary | 说明 |
+- 展示给用户：`error.message`
+- 程序分类处理：`error.code`
+- 查看详细原因：`error.reason`
+
+常见 `error.code`：
+
+| code | 说明 |
 | --- | --- |
-| `参考素材未通过内容审核` | 图片或视频参考素材未过审 |
-| `提示词未通过内容审核` | prompt 文本未过审 |
-| `账号凭证失效` | JWT/Cookie 不可用，需要刷新或重新导入 |
-| `上传或请求超时` | 上传、S3 或请求超时 |
-| `Runway 服务暂时不可用` | Runway 5xx 或临时服务错误 |
+| `content_policy_violation` | 内容审核未通过 |
+| `timeout` | 任务超时 |
+| `authentication_failed` | 服务暂时不可用或鉴权失败 |
+| `generation_failed` | 生成失败 |
+| `cancelled` | 任务已取消 |
 
-任务状态：
-
-| status | 含义 |
-| --- | --- |
-| `pending` | 本地排队中 |
-| `submitting` | 正在上传素材或提交 Runway |
-| `queuing` | Runway 排队中 |
-| `generating` | Runway 生成中 |
-| `completed` | 已完成，读取 `videoUrl` |
-| `failed` | 失败，读取 `error` |
-| `cancelled` | 已取消 |
-
-## 6. 查询任务时间线
-
-### `GET /tasks/:id/events`
-
-```bash
-curl -H "Authorization: Bearer change-me" \
-  http://127.0.0.1:8790/tasks/<task-id>/events
-```
-
-返回任务入队、账号分配、提交、状态变化、失败/完成等关键事件。历史任务没有事件记录时，服务会根据任务字段合成基础时间线。
-
-## 7. 查询任务列表
-
-### `GET /tasks`
-
-```bash
-curl -H "Authorization: Bearer change-me" \
-  "http://127.0.0.1:8790/tasks?limit=20"
-```
-
-按状态筛选：
-
-```bash
-curl -H "Authorization: Bearer change-me" \
-  "http://127.0.0.1:8790/tasks?status=completed&limit=20"
-```
-
-查询参数：
-
-| 参数 | 说明 |
-| --- | --- |
-| `status` | 可选，按状态过滤 |
-| `limit` | 可选，默认 `50`，最大 `200` |
-| `offset` | 可选，分页偏移 |
-
-## 8. 重试失败任务
-
-### `POST /tasks/:id/retry`
-
-只允许重试 `failed` 状态的任务。
-
-```bash
-curl -X POST http://127.0.0.1:8790/tasks/<task-id>/retry \
-  -H "Authorization: Bearer change-me"
-```
-
-响应：
-
-```json
-{
-  "id": "new-local-task-id",
-  "runwayTaskId": null,
-  "status": "pending",
-  "accountId": "account-id"
-}
-```
-
-## 9. Node.js 调用示例
+## JavaScript 示例
 
 ```js
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileFrom } from 'node-fetch';
-
 const baseUrl = 'http://127.0.0.1:8790';
-const apiKey = 'change-me';
-
-const form = new FormData();
-form.set('prompt', 'a cinematic product shot with slow camera movement');
-form.set('model', 'seedance_2');
-form.set('duration', '5');
-form.set('resolution', '720p');
-form.set('aspectRatio', '16:9');
-form.set('generateAudio', 'true');
-form.set('exploreMode', 'true');
-
-const referencePath = '/absolute/path/to/reference.mp4';
-form.append('media[]', await fileFrom(referencePath), path.basename(referencePath));
+const apiKey = '<API_KEY>';
 
 const createResp = await fetch(`${baseUrl}/v1/videos`, {
   method: 'POST',
   headers: {
-    Authorization: `Bearer ${apiKey}`
+    Authorization: `Bearer ${apiKey}`,
+    'Content-Type': 'application/json'
   },
-  body: form
+  body: JSON.stringify({
+    model: 'seedance_2',
+    prompt: 'A cinematic product video with soft studio lighting.',
+    seconds: '5',
+    size: '1280x720',
+    media_urls: ['https://example.com/reference.jpg']
+  })
 });
 
 const task = await createResp.json();
-console.log(task);
 
 while (true) {
-  await new Promise((resolve) => setTimeout(resolve, 5000));
-  const pollResp = await fetch(`${baseUrl}/v1/videos/${task.id}`, {
+  const resp = await fetch(`${baseUrl}/v1/videos/${task.id}`, {
     headers: { Authorization: `Bearer ${apiKey}` }
   });
-  const current = await pollResp.json();
-  console.log(current.status, current.progress, current.video_url);
-  if (['completed', 'failed', 'cancelled'].includes(current.status)) break;
+  const current = await resp.json();
+
+  if (current.status === 'completed') {
+    console.log(current.video_url);
+    break;
+  }
+
+  if (current.status === 'failed') {
+    throw new Error(current.error?.message || 'Video generation failed');
+  }
+
+  await waitBeforeNextQuery();
 }
 ```
 
-如果使用 Node.js 20+ 原生 `fetch/FormData`，也可以用 `fs.openAsBlob` 组装文件：
-
-```js
-const blob = await fs.openAsBlob('/absolute/path/to/reference.mp4', { type: 'video/mp4' });
-form.append('media[]', blob, 'reference.mp4');
-```
-
-## 10. Python 调用示例
+## Python 示例
 
 ```python
-import time
 import requests
 
-BASE_URL = "http://127.0.0.1:8790"
-API_KEY = "change-me"
+base_url = "http://127.0.0.1:8790"
+api_key = "<API_KEY>"
+headers = {"Authorization": f"Bearer {api_key}"}
 
-headers = {"Authorization": f"Bearer {API_KEY}"}
-
-with open("/absolute/path/to/reference.mp4", "rb") as f:
-    resp = requests.post(
-        f"{BASE_URL}/v1/videos",
-        headers=headers,
-        data={
-            "prompt": "continue the motion and keep the same subject identity",
-            "model": "seedance_2",
-            "duration": "5",
-            "resolution": "720p",
-            "aspectRatio": "16:9",
-            "generateAudio": "true",
-            "exploreMode": "true",
-            "accountId": "auto",
-        },
-        files=[
-            ("media[]", ("reference.mp4", f, "video/mp4")),
-        ],
-    )
+resp = requests.post(
+    f"{base_url}/v1/videos",
+    headers={**headers, "Content-Type": "application/json"},
+    json={
+        "model": "seedance_2",
+        "prompt": "A cinematic product video with soft studio lighting.",
+        "seconds": "5",
+        "size": "1280x720",
+        "media_urls": ["https://example.com/reference.jpg"],
+    },
+)
 
 task = resp.json()
-print(task)
 
 while True:
-    time.sleep(5)
-    current = requests.get(f"{BASE_URL}/v1/videos/{task['id']}", headers=headers).json()
-    print(current.get("status"), current.get("progress"), current.get("video_url"))
-    if current.get("status") in ["completed", "failed", "cancelled"]:
+    current = requests.get(f"{base_url}/v1/videos/{task['id']}", headers=headers).json()
+    if current["status"] == "completed":
+        print(current["video_url"])
         break
+    if current["status"] == "failed":
+        raise RuntimeError(current.get("error", {}).get("message", "Video generation failed"))
+    wait_before_next_query()
 ```
-
-## 11. 账号管理接口
-
-账号管理接口主要给中文后台使用，也可以用 API 调用。
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/api/accounts` | 账号列表，不返回明文 JWT/Cookie |
-| `GET` | `/api/accounts/:id` | 账号详情，返回 JWT/Cookie，用于编辑 |
-| `POST` | `/api/accounts/manual` | 手动添加账号 |
-| `PUT` | `/api/accounts/:id` | 修改账号配置和凭证 |
-| `POST` | `/api/accounts/:id/refresh-jwt` | 用 Cookie 刷新 JWT |
-| `GET` | `/api/accounts/:id/runway-credits` | 查询并缓存 Runway 额度 |
-| `POST` | `/api/accounts/:id/reset-generation-usage` | 手动重置每日生成计数 |
-| `GET` | `/api/accounts/export` | 导出账号 JSON，包含敏感凭证 |
-| `POST` | `/api/accounts/import` | 导入账号 JSON |
-
-注意：`/api/accounts/export` 导出的 JSON 包含 `jwt` 和 `cookieHeader`，不要提交到 Git。
-
-账号的 `generationLimit` 是每日本地提交数量上限，默认 `80`。服务按北京时间自然日自动刷新 `generationUsed`，也可以通过 `reset-generation-usage` 手动清零；这个计数不等于 Runway 官方 credits。
-
-`POST /api/accounts/import` 支持以下 JSON 结构：
-
-```json
-{ "accounts": [{ "name": "账号1", "jwt": "...", "cookieHeader": "...", "teamId": 1 }] }
-```
-
-也支持直接传数组、`{ "account": {...} }` 或单个账号对象。字段兼容 `authorization`、`cookie`、`team_id`、`asset_group_id`、`sourceVersion`、嵌套 `credentials` 等常见格式；`asset_group_id` 兼容但不是必填。重复 `id` 会自动生成新账号 ID。返回值会包含 `imported`、`skipped` 和逐条 `errors`，方便定位导入失败原因。
-
-### `POST /api/plugin/accounts/import`
-
-Chrome 插件专用导入接口，鉴权仍然使用 `Authorization: Bearer <INTERNAL_API_KEY>`，请求体和 `/api/accounts/import` 相同。该接口允许插件跨域调用，便于从本机浏览器直接导入到部署服务器。
-
-## 12. 最小调用流程
-
-1. 确保后台已有至少一个 `ready: true` 的 Runway 账号。
-2. 调用 `POST /v1/videos` 创建任务。
-3. 每 5 到 10 秒调用 `GET /v1/videos/:id` 查询状态。
-4. 当 `status` 为 `completed` 时读取 `video_url`，它是本服务代理 URL，不是 Runway 原始签名 URL。
