@@ -128,12 +128,22 @@ curl -X POST http://127.0.0.1:8790/v1/videos \
   "id": "b3c9e2c4-4d4d-4a97-9d79-000000000000",
   "object": "video",
   "created": 1779190000,
+  "created_at": 1779190000,
   "model": "seedance_2",
+  "prompt": "animate this reference with a slow dolly-in camera move",
+  "seconds": "5",
+  "size": "1280x720",
   "status": "queued",
-  "runway_task_id": null,
+  "progress": null,
   "video_url": null,
   "thumbnail_url": null,
-  "error": null
+  "error": null,
+  "metadata": {
+    "prompt": "animate this reference with a slow dolly-in camera move",
+    "duration": 5,
+    "resolution": "720p",
+    "aspect_ratio": "16:9"
+  }
 }
 ```
 
@@ -155,6 +165,8 @@ curl -H "Authorization: Bearer change-me" \
 | `cancelled` | 已取消 |
 
 完成任务的 `video_url` / `thumbnail_url` 默认返回本服务的流式代理 URL，不直接返回 Runway 原始签名 URL。访问代理 URL 时，后端会刷新 Runway task，拿最新签名地址并转发视频流。
+
+业务 `/v1` 接口不会返回账号、内部任务、上游服务名称、原始状态、原始错误 JSON 或素材内部链接等实现细节；这些信息只在后台管理接口和请求日志里用于排查。
 
 ```text
 GET /v1/videos/:id/content
@@ -331,11 +343,16 @@ curl -H "Authorization: Bearer change-me" \
 ```json
 {
   "id": "b3c9e2c4-4d4d-4a97-9d79-000000000000",
-  "runwayTaskId": "runway-task-id",
+  "object": "video",
+  "created_at": 1779190000,
+  "model": "seedance_2",
+  "prompt": "animate this reference with a slow dolly-in camera move",
+  "seconds": "5",
+  "size": "1280x720",
   "status": "completed",
   "progress": 100,
-  "videoUrl": "https://...",
-  "thumbnailUrl": "https://...",
+  "video_url": "https://api.example.com/v1/videos/b3c9e2c4-4d4d-4a97-9d79-000000000000/content?expires=...",
+  "thumbnail_url": "https://api.example.com/v1/videos/b3c9e2c4-4d4d-4a97-9d79-000000000000/thumbnail?expires=...",
   "error": null
 }
 ```
@@ -345,19 +362,20 @@ curl -H "Authorization: Bearer change-me" \
 ```json
 {
   "id": "b3c9e2c4-4d4d-4a97-9d79-000000000000",
+  "object": "video",
+  "created_at": 1779190000,
   "status": "failed",
-  "rawStatus": "FAILED",
-  "errorSummary": "参考素材未通过内容审核",
-  "errorCode": "SAFETY.INPUT.MULTIMODAL",
-  "errorCategory": "SEXUALLY_EXPLICIT",
   "error": {
-    "code": "SAFETY.INPUT.MULTIMODAL",
-    "message": "Input media did not pass content moderation."
+    "message": "参考素材未通过内容审核：参考素材包含不符合内容政策的画面或描述，请更换素材后重试。",
+    "code": "content_policy_violation",
+    "type": "video_generation_error",
+    "param": null,
+    "reason": "参考素材包含不符合内容政策的画面或描述，请更换素材后重试。"
   }
 }
 ```
 
-失败时优先给业务方展示 `errorSummary`。`errorDetail` 和 `rawResponse` 会保留 Runway 原始返回，方便排查。
+失败时优先给业务方展示 `error.message`。这个字段采用 OpenAI 常见错误对象结构，包含中文摘要和具体原因；如果下游需要单独拿详细审核解释，可以读取 `error.reason`。`reason` 会尽量保留审核或失败说明，但会脱敏 URL、凭证、账号和上游实现信息。管理后台仍可查看完整内部详情和请求日志。
 
 常见中文摘要：
 

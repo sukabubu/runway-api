@@ -1153,42 +1153,31 @@ function toV1Video(task, object = 'video', options = {}) {
     id: task.id,
     object,
     created: toUnixSeconds(task.createdAt),
+    created_at: toUnixSeconds(task.createdAt),
     model: task.model,
+    prompt: task.prompt,
+    seconds: task.duration != null ? String(task.duration) : null,
+    size: resolutionToOpenAiSize(task.resolution, task.aspectRatio),
     status: toV1TaskStatus(task.status),
-    runway_task_id: task.runwayTaskId,
-    account_id: task.accountId,
-    account_name: task.accountName,
     progress: task.progress,
     video_url: proxiedMediaUrl(task, 'content', options.request, options.config),
     thumbnail_url: proxiedMediaUrl(task, 'thumbnail', options.request, options.config),
     error: ['failed', 'cancelled'].includes(task.status)
       ? {
-          message: task.errorSummary || task.errorCode || (task.status === 'cancelled' ? '任务已取消' : '任务失败'),
-          code: task.errorCode,
-          category: task.errorCategory,
-          reason: task.errorReason,
-          runway_message: task.errorMessage,
-          detail: task.errorDetail || task.error
+          message: publicErrorMessage(task),
+          code: publicErrorCode(task),
+          type: 'video_generation_error',
+          param: null,
+          reason: publicErrorReason(task)
         }
       : null,
     metadata: {
-      raw_status: task.rawStatus,
-      signed_url_refresh_error: task.signedUrlRefreshError || null,
       prompt: task.prompt,
       duration: task.duration,
       resolution: task.resolution,
       aspect_ratio: task.aspectRatio,
       generate_audio: task.generateAudio,
       explore_mode: task.exploreMode,
-      parent_task_id: task.parentTaskId,
-      assets: (task.assets || []).map((asset) => ({
-        id: asset.id,
-        filename: asset.filename,
-        mime_type: asset.mimeType,
-        media_type: asset.mediaType,
-        size: asset.size,
-        runway_asset_id: asset.runwayAssetId
-      })),
       created_at: task.createdAt,
       updated_at: task.updatedAt,
       submitted_at: task.submittedAt,
@@ -1197,9 +1186,83 @@ function toV1Video(task, object = 'video', options = {}) {
   };
 }
 
+function resolutionToOpenAiSize(resolution, aspectRatio) {
+  if (!resolution || !aspectRatio) return null;
+  const base = {
+    '480p': 480,
+    '720p': 720,
+    '1080p': 1080
+  }[String(resolution).toLowerCase()];
+  const ratio = String(aspectRatio).split(':').map((part) => Number(part));
+  if (!base || ratio.length !== 2 || !ratio[0] || !ratio[1]) return `${resolution} ${aspectRatio}`;
+  if (ratio[0] >= ratio[1]) {
+    return `${roundToEven((base * ratio[0]) / ratio[1])}x${base}`;
+  }
+  return `${base}x${roundToEven((base * ratio[1]) / ratio[0])}`;
+}
+
+function roundToEven(value) {
+  return Math.max(2, Math.round(value / 2) * 2);
+}
+
 function safeAssetForResponse(asset) {
   const { runwayUrl, previewUrl, ...safe } = asset;
   return safe;
+}
+
+function publicErrorCode(task) {
+  if (task.status === 'cancelled') return 'cancelled';
+  const summary = `${task.errorSummary || ''} ${task.errorCode || ''} ${task.errorCategory || ''}`;
+  if (/审核|SAFETY|SEXUALLY_EXPLICIT|moderation/i.test(summary)) return 'content_policy_violation';
+  if (/超时|timeout/i.test(summary)) return 'timeout';
+  if (/凭证|AUTH|401|403|credential/i.test(summary)) return 'authentication_failed';
+  return 'generation_failed';
+}
+
+function publicErrorMessage(task) {
+  const summary = task.errorSummary || task.errorCode || (task.status === 'cancelled' ? '任务已取消' : '任务失败');
+  const reason = publicErrorReason(task);
+  if (!reason || reason === summary || task.status === 'cancelled') return summary;
+  return `${summary}：${reason}`;
+}
+
+function publicErrorReason(task) {
+  if (task.status === 'cancelled') return '任务已取消。';
+  const reason = firstNonEmpty(
+    task.errorReason,
+    task.errorMessage,
+    task.error?.reason,
+    task.error?.message,
+    task.errorSummary,
+    task.errorCode
+  );
+  const cleaned = sanitizePublicErrorText(reason);
+  return cleaned || task.errorSummary || '任务失败。';
+}
+
+function sanitizePublicErrorText(value) {
+  let text = String(value || '').trim();
+  if (!text) return null;
+  text = text
+    .replace(/Runway/gi, '上游服务')
+    .replace(/JWT|Bearer|Authorization|Cookie/gi, '凭证')
+    .replace(/https?:\/\/\S+/gi, '[链接已隐藏]')
+    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[邮箱已隐藏]')
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[凭证已隐藏]')
+    .replace(/\b\d{6,}\b/g, '[编号已隐藏]')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (text.length > 1000) text = `${text.slice(0, 1000)}...`;
+  return text || null;
+}
+
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    if (value == null) continue;
+    const text = String(value).trim();
+    if (text) return text;
+  }
+  return null;
 }
 
 function toV1TaskStatus(status) {

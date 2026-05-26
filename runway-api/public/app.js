@@ -651,8 +651,8 @@ function openProxyDialog(proxy = null) {
 
 async function refreshTasks() {
   const query = el.statusFilter.value ? `?status=${encodeURIComponent(el.statusFilter.value)}` : '';
-  const { data } = await fetchJson(`/v1/videos${query}`);
-  renderTasks((data || []).map(fromV1Video));
+  const { tasks } = await fetchJson(`/tasks${query}`);
+  renderTasks(tasks || []);
 }
 
 function renderTasks(tasks) {
@@ -692,8 +692,8 @@ function renderTasks(tasks) {
   }
   for (const button of $$('[data-task-detail]')) {
     button.addEventListener('click', async () => {
-      const task = await fetchJson(`/v1/videos/${button.dataset.taskDetail}`);
-      const { data: events } = await fetchJson(`/v1/videos/${button.dataset.taskDetail}/events`);
+      const task = await fetchJson(`/tasks/${button.dataset.taskDetail}`);
+      const { events } = await fetchJson(`/tasks/${button.dataset.taskDetail}/events`);
       el.logDetail.textContent = JSON.stringify({ task, events }, null, 2);
       el.logDialog.showModal();
     });
@@ -747,41 +747,6 @@ function renderTaskResult(task) {
       ].filter(Boolean).join('\n')
     : text;
   return `<span title="${escapeAttr(title)}">${escapeHtml(text)}</span>`;
-}
-
-function fromV1Video(video) {
-  return {
-    id: video.id,
-    parentTaskId: video.metadata?.parent_task_id,
-    accountId: video.account_id,
-    accountName: video.account_name,
-    runwayTaskId: video.runway_task_id,
-    status: fromV1Status(video.status),
-    rawStatus: video.metadata?.raw_status,
-    signedUrlRefreshError: video.metadata?.signed_url_refresh_error,
-    prompt: video.metadata?.prompt || '',
-    model: video.model,
-    duration: video.metadata?.duration,
-    resolution: video.metadata?.resolution,
-    aspectRatio: video.metadata?.aspect_ratio,
-    generateAudio: video.metadata?.generate_audio,
-    exploreMode: video.metadata?.explore_mode,
-    progress: video.progress,
-    videoUrl: video.video_url,
-    thumbnailUrl: video.thumbnail_url,
-    errorSummary: video.error?.message,
-    errorCode: video.error?.code,
-    errorCategory: video.error?.category,
-    errorMessage: video.error?.runway_message,
-    errorReason: video.error?.reason,
-    errorDetail: video.error?.detail,
-    error: video.error,
-    createdAt: video.metadata?.created_at,
-    updatedAt: video.metadata?.updated_at,
-    submittedAt: video.metadata?.submitted_at,
-    completedAt: video.metadata?.completed_at,
-    assets: video.metadata?.assets || []
-  };
 }
 
 function fromV1Status(status) {

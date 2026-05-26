@@ -457,7 +457,17 @@ describe('OpenAI compatible video API', () => {
       headers: { authorization: 'Bearer secret' }
     });
     expect(detail.statusCode).toBe(200);
-    expect(JSON.parse(detail.body)).toMatchObject({ id: body.id, object: 'video' });
+    const detailBody = JSON.parse(detail.body);
+    expect(detailBody).toMatchObject({ id: body.id, object: 'video' });
+    expect(detailBody.created_at).toEqual(detailBody.created);
+    expect(detailBody.prompt).toBe('a calm product video');
+    expect(detailBody.seconds).toBe('5');
+    expect(detailBody.size).toBe('854x480');
+    expect(detailBody.runway_task_id).toBeUndefined();
+    expect(detailBody.account_id).toBeUndefined();
+    expect(detailBody.account_name).toBeUndefined();
+    expect(detailBody.metadata.raw_status).toBeUndefined();
+    expect(detailBody.metadata.assets).toBeUndefined();
 
     const list = await app.inject({
       method: 'GET',
@@ -498,7 +508,7 @@ describe('OpenAI compatible video API', () => {
     expect(JSON.parse(cancelled.body)).toMatchObject({
       id: body.id,
       status: 'cancelled',
-      error: { code: 'USER_CANCELLED' }
+      error: { code: 'cancelled' }
     });
 
     await app.close();
@@ -619,6 +629,11 @@ describe('OpenAI compatible video API', () => {
     expect(v1Body.video_url).toContain('/v1/videos/completed-task/content?');
     expect(v1Body.thumbnail_url).toContain('/v1/videos/completed-task/thumbnail?');
     expect(v1Body.video_url).not.toContain(mediaBaseUrl);
+    expect(v1Body.runway_task_id).toBeUndefined();
+    expect(v1Body.account_id).toBeUndefined();
+    expect(v1Body.account_name).toBeUndefined();
+    expect(v1Body.metadata.raw_status).toBeUndefined();
+    expect(v1Body.metadata.assets).toBeUndefined();
     expect(JSON.stringify(v1Body)).not.toContain(`${mediaBaseUrl}/raw-asset.png`);
     expect(JSON.stringify(v1Body)).not.toContain(`${mediaBaseUrl}/raw-preview.png`);
 
@@ -653,6 +668,80 @@ describe('OpenAI compatible video API', () => {
 
     await app.close();
     await new Promise((resolve) => mediaServer.close(resolve));
+  });
+
+  it('returns specific but sanitized public failure reasons', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-public-error-test-'));
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'), { internalApiKey: 'secret' });
+    db.createTask({
+      id: 'failed-public-task',
+      runwayTaskId: 'runway-secret-task',
+      status: 'failed',
+      rawStatus: 'FAILED',
+      prompt: 'hello',
+      model: 'seedance_2',
+      duration: 5,
+      resolution: '480p',
+      aspectRatio: '16:9',
+      generateAudio: true,
+      exploreMode: true,
+      error: {
+        raw: {
+          error: {
+            reason: 'SAFETY.INPUT.TEXT',
+            errorMessage: 'Content did not pass content moderation.',
+            moderation_category: 'SEXUALLY_EXPLICIT',
+            moderationMetadata: {
+              moderationResponseClassification: [{
+                llmResponse: 'Runway rejected https://signed.example/video.mp4 because the prompt describes a sexual act and physical assault. Authorization Bearer eyJabc.def.ghi was present.'
+              }]
+            }
+          }
+        }
+      }
+    });
+    const app = await buildApp({
+      config: { internalApiKey: 'secret', uploadDir: path.join(dir, 'uploads') },
+      db,
+      browser: {
+        status: () => ({ started: false, pages: 0, headless: true }),
+        close: async () => {}
+      },
+      worker: {
+        start: () => {},
+        stop: async () => {}
+      },
+      logger: false
+    });
+
+    const detail = await app.inject({
+      method: 'GET',
+      url: '/v1/videos/failed-public-task',
+      headers: { authorization: 'Bearer secret' }
+    });
+    expect(detail.statusCode).toBe(200);
+    const body = JSON.parse(detail.body);
+    expect(body).toMatchObject({
+      status: 'failed',
+      error: {
+        code: 'content_policy_violation',
+        type: 'video_generation_error',
+        param: null
+      }
+    });
+    expect(body.error.message).toContain('提示词未通过内容审核');
+    expect(body.error.message).toContain('sexual act and physical assault');
+    expect(body.error.reason).toContain('sexual act and physical assault');
+    expect(body.error.reason).not.toContain('Runway');
+    expect(body.error.reason).not.toContain('https://signed.example');
+    expect(body.error.reason).not.toContain('Bearer');
+    expect(body.error.message).not.toContain('Runway');
+    expect(body.error.message).not.toContain('https://signed.example');
+    expect(body.error.message).not.toContain('Bearer');
+    expect(body.error.detail).toBeUndefined();
+    expect(body.runway_task_id).toBeUndefined();
+
+    await app.close();
   });
 
   it('downloads reference media URLs before queueing /v1/videos jobs', async () => {
@@ -698,15 +787,15 @@ describe('OpenAI compatible video API', () => {
     const task = JSON.parse(created.body);
     const detail = await app.inject({
       method: 'GET',
-      url: `/v1/videos/${task.id}`,
+      url: `/tasks/${task.id}`,
       headers: { authorization: 'Bearer secret' }
     });
-    const assets = JSON.parse(detail.body).metadata.assets;
+    const assets = JSON.parse(detail.body).assets;
     expect(assets).toHaveLength(1);
     expect(assets[0]).toMatchObject({
       filename: 'IMG_1.png',
-      mime_type: 'image/png',
-      media_type: 'image',
+      mimeType: 'image/png',
+      mediaType: 'image',
       size: 8
     });
 
@@ -762,9 +851,9 @@ describe('OpenAI compatible video API', () => {
     const task = JSON.parse(created.body);
     const assets = JSON.parse((await app.inject({
       method: 'GET',
-      url: `/v1/videos/${task.id}`,
+      url: `/tasks/${task.id}`,
       headers: { authorization: 'Bearer secret' }
-    })).body).metadata.assets;
+    })).body).assets;
     expect(assets.map((asset) => asset.filename)).toEqual(['IMG_1.png', 'VID_1.mp4', 'IMG_2.png']);
 
     await app.close();
@@ -814,13 +903,13 @@ describe('OpenAI compatible video API', () => {
     const task = JSON.parse(created.body);
     const assets = JSON.parse((await app.inject({
       method: 'GET',
-      url: `/v1/videos/${task.id}`,
+      url: `/tasks/${task.id}`,
       headers: { authorization: 'Bearer secret' }
-    })).body).metadata.assets;
+    })).body).assets;
     expect(assets[0]).toMatchObject({
       filename: '主体.png',
-      mime_type: 'image/png',
-      media_type: 'image'
+      mimeType: 'image/png',
+      mediaType: 'image'
     });
 
     await app.close();
