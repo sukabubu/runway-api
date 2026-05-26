@@ -1156,6 +1156,9 @@ export class RunwayDatabase {
     if (current.accountId && ACTIVE_STATUSES.has(previousStatus) && TERMINAL_STATUSES.has(status)) {
       this.releaseAccount(current.accountId);
     }
+    if (current.accountId && previousStatus !== 'completed' && status === 'completed') {
+      this.incrementGenerationUsed(current.accountId);
+    }
     if (status !== previousStatus) {
       this.addTaskEvent(id, {
         accountId: patch.accountId ?? patch.account_id ?? current.accountId ?? null,

@@ -96,7 +96,6 @@ export class TaskWorker {
       const submission = await this.runway.submitTask(assignedTask, uploadedAssets, { account });
       if (this.isCancelled(task.id)) return this.queue.release(task.id);
       this.lastSubmitAt = Date.now();
-      this.db.incrementGenerationUsed?.(account.id);
       this.db.markAccountSuccess?.(account.id);
       this.db.logRequest?.({
         accountId: account.id,

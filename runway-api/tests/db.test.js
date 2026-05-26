@@ -140,6 +140,53 @@ describe('RunwayDatabase', () => {
     db.close();
   });
 
+  it('counts generation usage only when a task completes successfully', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-test-'));
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'));
+    const account = db.createAccount({
+      name: 'quota-account',
+      jwt: 'jwt-a',
+      teamId: 1,
+      generationLimit: 10
+    });
+    db.createTask({
+      id: 'failed-task',
+      accountId: account.id,
+      runwayTaskId: 'runway-failed',
+      status: 'generating',
+      prompt: 'hello',
+      model: 'seedance_2',
+      duration: 5,
+      resolution: '480p',
+      aspectRatio: '16:9',
+      generateAudio: true,
+      exploreMode: true
+    });
+    db.createTask({
+      id: 'completed-task',
+      accountId: account.id,
+      runwayTaskId: 'runway-completed',
+      status: 'generating',
+      prompt: 'hello',
+      model: 'seedance_2',
+      duration: 5,
+      resolution: '480p',
+      aspectRatio: '16:9',
+      generateAudio: true,
+      exploreMode: true
+    });
+
+    db.updateTask('failed-task', { status: 'failed', error: { code: 'SAFETY.INPUT.TEXT' } });
+    expect(db.getAccount(account.id).generationUsed).toBe(0);
+
+    db.updateTask('completed-task', { status: 'completed', videoUrl: 'https://video' });
+    expect(db.getAccount(account.id).generationUsed).toBe(1);
+
+    db.updateTask('completed-task', { progress: 100 });
+    expect(db.getAccount(account.id).generationUsed).toBe(1);
+    db.close();
+  });
+
   it('automatically resets generation usage on a new Shanghai calendar day', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-test-'));
     const db = new RunwayDatabase(path.join(dir, 'test.sqlite'));

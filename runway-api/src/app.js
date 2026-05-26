@@ -1089,7 +1089,8 @@ function presentTaskForResponse(task, request, config) {
   const presented = {
     ...task,
     videoUrl: proxiedMediaUrl(task, 'content', request, config),
-    thumbnailUrl: proxiedMediaUrl(task, 'thumbnail', request, config)
+    thumbnailUrl: proxiedMediaUrl(task, 'thumbnail', request, config),
+    assets: (task.assets || []).map(safeAssetForResponse)
   };
   delete presented.rawResponse;
   return presented;
@@ -1186,9 +1187,7 @@ function toV1Video(task, object = 'video', options = {}) {
         mime_type: asset.mimeType,
         media_type: asset.mediaType,
         size: asset.size,
-        runway_asset_id: asset.runwayAssetId,
-        runway_url: asset.runwayUrl,
-        preview_url: asset.previewUrl
+        runway_asset_id: asset.runwayAssetId
       })),
       created_at: task.createdAt,
       updated_at: task.updatedAt,
@@ -1196,6 +1195,11 @@ function toV1Video(task, object = 'video', options = {}) {
       completed_at: task.completedAt
     }
   };
+}
+
+function safeAssetForResponse(asset) {
+  const { runwayUrl, previewUrl, ...safe } = asset;
+  return safe;
 }
 
 function toV1TaskStatus(status) {

@@ -553,6 +553,19 @@ describe('OpenAI compatible video API', () => {
       submittedAt: new Date().toISOString(),
       completedAt: new Date().toISOString()
     });
+    db.addAsset({
+      id: 'asset-with-raw-url',
+      taskId: 'completed-task',
+      accountId: account.id,
+      localPath: path.join(dir, 'reference.png'),
+      filename: 'reference.png',
+      mimeType: 'image/png',
+      mediaType: 'image',
+      size: 12,
+      runwayAssetId: 'runway-asset',
+      runwayUrl: `${mediaBaseUrl}/raw-asset.png`,
+      previewUrl: `${mediaBaseUrl}/raw-preview.png`
+    });
     const pollTask = vi.fn()
       .mockResolvedValueOnce({
         taskId: 'runway-task',
@@ -606,6 +619,8 @@ describe('OpenAI compatible video API', () => {
     expect(v1Body.video_url).toContain('/v1/videos/completed-task/content?');
     expect(v1Body.thumbnail_url).toContain('/v1/videos/completed-task/thumbnail?');
     expect(v1Body.video_url).not.toContain(mediaBaseUrl);
+    expect(JSON.stringify(v1Body)).not.toContain(`${mediaBaseUrl}/raw-asset.png`);
+    expect(JSON.stringify(v1Body)).not.toContain(`${mediaBaseUrl}/raw-preview.png`);
 
     const contentUrl = new URL(v1Body.video_url);
     const content = await app.inject({
@@ -627,6 +642,8 @@ describe('OpenAI compatible video API', () => {
     expect(taskBody.thumbnailUrl).toContain('/v1/videos/completed-task/thumbnail?');
     expect(taskBody.videoUrl).not.toContain(mediaBaseUrl);
     expect(taskBody.rawResponse).toBeUndefined();
+    expect(JSON.stringify(taskBody)).not.toContain(`${mediaBaseUrl}/raw-asset.png`);
+    expect(JSON.stringify(taskBody)).not.toContain(`${mediaBaseUrl}/raw-preview.png`);
     expect(db.getTask('completed-task').videoUrl).toBe(`${mediaBaseUrl}/video-tasks.mp4`);
     expect(pollTask).toHaveBeenCalledTimes(3);
     expect(pollTask).toHaveBeenCalledWith('runway-task', expect.objectContaining({
