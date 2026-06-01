@@ -27,7 +27,11 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
 
 chrome.webRequest.onBeforeRequest.addListener(
   async (details) => {
-    const patch = extractIdsFromRequest(details.url, details.requestBody);
+    const decodedBody = decodeRequestBody(details.requestBody);
+    const patch = {
+      ...extractIdsFromText(details.url, decodedBody),
+      ...extractProfileFromText(decodedBody)
+    };
     if (Object.keys(patch).length) await mergeState({ ...patch, capturedAt: new Date().toISOString() });
   },
   RUNWAY_API_FILTER,
@@ -117,9 +121,9 @@ async function getCookieHeader() {
   return parts.join('; ');
 }
 
-function extractIdsFromRequest(url, requestBody) {
+function extractIdsFromText(...sources) {
   const patch = {};
-  for (const source of [url, decodeRequestBody(requestBody)]) {
+  for (const source of sources) {
     if (!source) continue;
     const teamId = matchValue(source, [
       /(?:asTeamId|teamId|team_id)["']?\s*[:=]\s*["']?(\d+)/i,
@@ -133,6 +137,46 @@ function extractIdsFromRequest(url, requestBody) {
     if (assetGroupId) patch.assetGroupId = assetGroupId;
   }
   return patch;
+}
+
+function extractProfileFromText(text) {
+  if (!text) return {};
+  const parsed = parseJson(text);
+  if (parsed) return extractProfileFromJson(parsed);
+  return compact({
+    email: matchValue(text, [/"email"\s*:\s*"([^"]+)"/i, /email=([^&\s]+)/i]),
+    accountName: matchValue(text, [/"(?:name|displayName|username)"\s*:\s*"([^"]+)"/i])
+  });
+}
+
+function extractProfileFromJson(value) {
+  const email = findStringByKey(value, ['email', 'emailAddress']);
+  const accountName = findStringByKey(value, ['name', 'displayName', 'username', 'fullName']);
+  return compact({ email, accountName });
+}
+
+function parseJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function findStringByKey(value, keys) {
+  if (!value || typeof value !== 'object') return null;
+  const queue = [value];
+  const seen = new Set();
+  while (queue.length) {
+    const item = queue.shift();
+    if (!item || typeof item !== 'object' || seen.has(item)) continue;
+    seen.add(item);
+    for (const [key, child] of Object.entries(item)) {
+      if (keys.includes(key) && typeof child === 'string' && child.trim()) return child.trim();
+      if (child && typeof child === 'object') queue.push(child);
+    }
+  }
+  return null;
 }
 
 function decodeRequestBody(requestBody) {
@@ -155,11 +199,16 @@ function matchValue(text, patterns) {
 
 function buildAccountExport(state = {}) {
   const teamId = state.teamId ? Number(state.teamId) : null;
+  const jwt = state.jwt || normalizeBearerToken(state.authorization);
+  const email = state.email || emailFromJwt(jwt);
+  const accountName = state.accountName || state.displayName || state.username || email;
   return compact({
-    name: state.name || `Runway 插件导入 ${new Date().toLocaleString('zh-CN')}`,
-    remark: '由 Chrome 插件从 Runway Web 请求抓取',
+    name: state.name || accountName || `Runway 插件导入 ${new Date().toLocaleString('zh-CN')}`,
+    accountName,
+    email,
+    remark: email ? `由 Chrome 插件从 Runway Web 请求抓取：${email}` : '由 Chrome 插件从 Runway Web 请求抓取',
     authorization: state.authorization || (state.jwt ? `Bearer ${state.jwt}` : null),
-    jwt: state.jwt || normalizeBearerToken(state.authorization),
+    jwt,
     cookieHeader: state.cookieHeader,
     teamId: Number.isFinite(teamId) ? teamId : null,
     assetGroupId: state.assetGroupId,
@@ -171,6 +220,17 @@ function buildAccountExport(state = {}) {
     capturedAt: state.capturedAt,
     capturedFromUrl: state.capturedFromUrl
   });
+}
+
+function emailFromJwt(token) {
+  const parts = String(token || '').split('.');
+  if (parts.length < 2) return null;
+  try {
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+    return typeof payload.email === 'string' && payload.email.trim() ? payload.email.trim() : null;
+  } catch {
+    return null;
+  }
 }
 
 function validateAccount(account) {

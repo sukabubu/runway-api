@@ -310,6 +310,44 @@ describe('account admin API', () => {
       clientId: null
     });
 
+    const emailOnly = await app.inject({
+      method: 'POST',
+      url: '/api/accounts/import',
+      headers: { authorization: 'Bearer secret' },
+      payload: {
+        authorization: 'Bearer email-only-jwt',
+        cookieHeader: 'session=email',
+        teamId: 4,
+        email: 'user@example.com'
+      }
+    });
+    expect(emailOnly.statusCode).toBe(200);
+    expect(JSON.parse(emailOnly.body).accounts[0]).toMatchObject({
+      name: 'user@example.com',
+      ready: true
+    });
+
+    const jwtWithEmail = [
+      Buffer.from(JSON.stringify({ alg: 'none' })).toString('base64url'),
+      Buffer.from(JSON.stringify({ email: 'jwt-user@example.com' })).toString('base64url'),
+      'signature'
+    ].join('.');
+    const jwtNamed = await app.inject({
+      method: 'POST',
+      url: '/api/accounts/import',
+      headers: { authorization: 'Bearer secret' },
+      payload: {
+        jwt: jwtWithEmail,
+        cookieHeader: 'session=jwt-email',
+        teamId: 5
+      }
+    });
+    expect(jwtNamed.statusCode).toBe(200);
+    expect(JSON.parse(jwtNamed.body).accounts[0]).toMatchObject({
+      name: 'jwt-user@example.com',
+      ready: true
+    });
+
     const mixed = await app.inject({
       method: 'POST',
       url: '/api/accounts/import',
@@ -334,7 +372,7 @@ describe('account admin API', () => {
     expect(mixedBody.imported).toBe(1);
     expect(mixedBody.skipped).toBe(1);
     expect(mixedBody.errors[0].message).toContain('不是有效对象');
-    expect(db.listAccounts()).toHaveLength(4);
+    expect(db.listAccounts()).toHaveLength(6);
 
     await app.close();
   });

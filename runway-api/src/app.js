@@ -1374,12 +1374,26 @@ function normalizeImportedAccount(item, index, db) {
   const credentials = item.credentials && typeof item.credentials === 'object' ? item.credentials : {};
   const duplicateId = item.id && db.getAccount(item.id);
   const runwayCredits = item.runwayCredits ?? item.runway_credits ?? item.credits ?? null;
+  const jwt = normalizeBearerToken(pickFirst(item, credentials, ['authorization', 'auth', 'jwt', 'bearer', 'accessToken', 'access_token', 'token']));
+  const importedEmail = normalizeOptionalImportString(pickFirst(item, credentials, ['email', 'emailAddress', 'email_address', 'userEmail', 'user_email']));
+  const jwtEmail = emailFromJwt(jwt);
+  const importedDisplayName = normalizeOptionalImportString(pickFirst(item, credentials, [
+    'accountName',
+    'account_name',
+    'displayName',
+    'display_name',
+    'username',
+    'userName',
+    'fullName',
+    'full_name'
+  ]));
+  const resolvedName = item.name || importedDisplayName || importedEmail || jwtEmail || (duplicateId ? `${duplicateId.name}（导入）` : '导入账号');
   return {
     ...item,
     id: item.id && !duplicateId ? item.id : randomUUID(),
-    name: item.name || item.accountName || item.displayName || (duplicateId ? `${duplicateId.name}（导入）` : '导入账号'),
+    name: resolvedName,
     remark: item.remark ?? item.note ?? item.description ?? null,
-    jwt: normalizeBearerToken(pickFirst(item, credentials, ['authorization', 'auth', 'jwt', 'bearer', 'accessToken', 'access_token', 'token'])),
+    jwt,
     cookieHeader: normalizeCookieHeader(pickFirst(item, credentials, ['cookieHeader', 'cookie_header', 'cookie', 'cookies'])),
     teamId: pickFirst(item, credentials, ['teamId', 'team_id', 'team']),
     assetGroupId: pickFirst(item, credentials, ['assetGroupId', 'asset_group_id', 'assetGroup']),
@@ -1416,6 +1430,17 @@ function normalizeImportedAccount(item, index, db) {
       : item.runwayCreditsJson ?? item.runway_credits_json ?? null,
     runwayCreditsCheckedAt: item.runwayCreditsCheckedAt ?? item.runway_credits_checked_at ?? null
   };
+}
+
+function emailFromJwt(token) {
+  const parts = String(token || '').split('.');
+  if (parts.length < 2) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+    return normalizeOptionalImportString(payload.email);
+  } catch {
+    return null;
+  }
 }
 
 function normalizeImportedProxy(item, index, db) {
