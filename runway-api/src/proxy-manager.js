@@ -88,10 +88,14 @@ export async function nodeFetchWithAgent(url, { method = 'GET', headers = {}, bo
         : Buffer.isBuffer(body)
           ? body
           : Buffer.from(String(body));
+    const requestHeaders = { ...headers };
+    if (buffer && !hasHeader(requestHeaders, 'content-length')) {
+      requestHeaders['Content-Length'] = String(buffer.length);
+    }
     return await new Promise((resolve, reject) => {
       const req = request(target, {
         method,
-        headers,
+        headers: requestHeaders,
         agent,
         signal: controller.signal
       }, (res) => {
@@ -118,6 +122,11 @@ export async function nodeFetchWithAgent(url, { method = 'GET', headers = {}, bo
   } finally {
     clearTimeout(timer);
   }
+}
+
+function hasHeader(headers, name) {
+  const needle = name.toLowerCase();
+  return Object.keys(headers || {}).some((key) => key.toLowerCase() === needle);
 }
 
 function normalizeProxyStrategy(value) {

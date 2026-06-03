@@ -1,6 +1,7 @@
 const state = {
   models: [],
   accounts: [],
+  pools: [],
   proxies: [],
   runtimeConfig: null,
   refreshTimer: null
@@ -22,18 +23,26 @@ const el = {
   statReady: $('#statReady'),
   statInflight: $('#statInflight'),
   statPending: $('#statPending'),
+  statTodayCompleted: $('#statTodayCompleted'),
   statQuota: $('#statQuota'),
   statProxies: $('#statProxies'),
   accounts: $('#accounts'),
+  pools: $('#pools'),
+  showPoolDialog: $('#showPoolDialog'),
+  refreshPools: $('#refreshPools'),
+  poolDialog: $('#poolDialog'),
+  poolForm: $('#poolForm'),
   addBrowserAccount: $('#addBrowserAccount'),
   showManual: $('#showManual'),
   exportAccounts: $('#exportAccounts'),
   importAccounts: $('#importAccounts'),
   manualDialog: $('#manualDialog'),
   manualForm: $('#manualForm'),
+  manualPoolSelect: $('#manualPoolSelect'),
   manualProxySelect: $('#manualProxySelect'),
   accountDialog: $('#accountDialog'),
   accountForm: $('#accountForm'),
+  accountPoolSelect: $('#accountPoolSelect'),
   accountProxySelect: $('#accountProxySelect'),
   accountDetailSummary: $('#accountDetailSummary'),
   showProxyDialog: $('#showProxyDialog'),
@@ -85,6 +94,7 @@ el.logout.addEventListener('click', async () => {
 });
 
 el.refreshAll.addEventListener('click', refreshAll);
+el.refreshPools.addEventListener('click', refreshPools);
 el.refreshTasks.addEventListener('click', refreshTasks);
 el.refreshLogs.addEventListener('click', refreshLogs);
 el.clearLogs.addEventListener('click', clearLogs);
@@ -92,6 +102,7 @@ el.updateProject.addEventListener('click', updateProject);
 el.statusFilter.addEventListener('change', refreshTasks);
 el.modelSelect.addEventListener('change', syncModelFields);
 el.showManual.addEventListener('click', () => el.manualDialog.showModal());
+el.showPoolDialog.addEventListener('click', () => openPoolDialog());
 el.showProxyDialog.addEventListener('click', () => openProxyDialog());
 for (const button of $$('[data-close-dialog]')) {
   button.addEventListener('click', () => button.closest('dialog')?.close());
@@ -119,6 +130,7 @@ el.manualForm.addEventListener('submit', async (event) => {
   const form = new FormData(el.manualForm);
   const body = Object.fromEntries(form);
   body.isActive = form.get('isActive') === 'on';
+  body.poolId = body.poolId || null;
   body.maxConcurrent = Number(body.maxConcurrent || 2);
   body.generationLimit = Number(body.generationLimit || 80);
   for (const key of ['requestTimeoutMs', 'uploadTimeoutMs', 'taskTimeoutMs', 'maxRetries']) {
@@ -130,6 +142,20 @@ el.manualForm.addEventListener('submit', async (event) => {
   el.manualForm.reset();
   el.manualForm.maxConcurrent.value = 2;
   el.manualForm.generationLimit.value = 80;
+  await refreshAccounts();
+});
+
+el.poolForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = new FormData(el.poolForm);
+  const body = Object.fromEntries(form);
+  body.isActive = form.get('isActive') === 'on';
+  if (!body.apiKey) delete body.apiKey;
+  const id = body.id;
+  delete body.id;
+  await fetchJson(id ? `/api/account-pools/${id}` : '/api/account-pools', jsonOptions(id ? 'PUT' : 'POST', body));
+  el.poolDialog.close();
+  await refreshPools();
   await refreshAccounts();
 });
 
@@ -318,7 +344,7 @@ function showLogin() {
 
 async function refreshAll() {
   await refreshModels();
-  await Promise.all([refreshHealth(), refreshProxies(), refreshAccounts(), refreshTasks(), refreshConfig(), refreshRuntimeConfig(), refreshSystemVersion(), refreshLogs()]);
+  await Promise.all([refreshHealth(), refreshPools(), refreshProxies(), refreshAccounts(), refreshTasks(), refreshConfig(), refreshRuntimeConfig(), refreshSystemVersion(), refreshLogs()]);
 }
 
 async function refreshHealth() {
@@ -329,10 +355,11 @@ async function refreshHealth() {
   el.statReady.textContent = summary.ready ?? 0;
   el.statInflight.textContent = summary.inflight ?? 0;
   el.statPending.textContent = summary.pendingTasks ?? 0;
+  el.statTodayCompleted.textContent = summary.todayCompletedTasks ?? 0;
   el.statQuota.textContent = summary.generationRemaining ?? 0;
   el.statProxies.textContent = health.proxies?.active ?? 0;
   const authFailed = health.recentAuthFailures?.[0];
-  el.summary.textContent = `浏览器 ${health.browser?.contexts || 0} 个账号窗口，可用账号 ${summary.ready ?? 0} 个，满并发 ${summary.fullConcurrency ?? 0} 个，满本地上限 ${summary.quotaExhausted ?? 0} 个，排队 ${health.queue?.pending ?? 0} 个，过期锁 ${health.queue?.stale ?? 0} 个${authFailed ? `，最近认证失败：${authFailed.name}` : ''}`;
+  el.summary.textContent = `浏览器 ${health.browser?.contexts || 0} 个账号窗口，可用账号 ${summary.ready ?? 0} 个，今日成功 ${summary.todayCompletedTasks ?? 0} 个，满并发 ${summary.fullConcurrency ?? 0} 个，满本地上限 ${summary.quotaExhausted ?? 0} 个，排队 ${health.queue?.pending ?? 0} 个，过期锁 ${health.queue?.stale ?? 0} 个${authFailed ? `，最近认证失败：${authFailed.name}` : ''}`;
 }
 
 async function refreshModels() {
@@ -380,6 +407,7 @@ async function refreshAccounts() {
     el.statReady.textContent = summary.ready;
     el.statInflight.textContent = summary.inflight;
     el.statPending.textContent = summary.pendingTasks;
+    el.statTodayCompleted.textContent = summary.todayCompletedTasks ?? 0;
   }
 }
 
@@ -389,6 +417,83 @@ function renderAccountSelect(accounts) {
     .map((account) => `<option value="${escapeAttr(account.id)}">${escapeHtml(account.name)}${account.ready ? '' : '（未就绪）'}</option>`)
     .join('');
   if (current && (current === 'auto' || accounts.some((account) => account.id === current))) el.accountSelect.value = current;
+}
+
+async function refreshPools() {
+  const { pools } = await fetchJson('/api/account-pools');
+  state.pools = pools || [];
+  renderPools(state.pools);
+  renderPoolSelects();
+}
+
+function renderPoolSelects() {
+  const options = poolOptions();
+  for (const select of [el.manualPoolSelect, el.accountPoolSelect]) {
+    if (!select) continue;
+    const selected = select.value;
+    select.innerHTML = options;
+    if (selected && state.pools.some((pool) => pool.id === selected)) select.value = selected;
+  }
+}
+
+function poolOptions(selected = '') {
+  return '<option value="">默认池</option>' + state.pools
+    .map((pool) => `<option value="${escapeAttr(pool.id)}" ${pool.id === selected ? 'selected' : ''}>${escapeHtml(pool.name)}${pool.isActive ? '' : '（停用）'}</option>`)
+    .join('');
+}
+
+function renderPools(pools) {
+  if (!pools.length) {
+    el.pools.innerHTML = '<div class="empty">暂无账号池。默认池继续使用主业务 API Key。</div>';
+    return;
+  }
+  el.pools.innerHTML = `
+    <div class="table-head pools-head"><span>池子</span><span>状态</span><span>API Key</span><span>账号</span><span>任务</span><span>操作</span></div>
+    ${pools.map((pool) => `
+      <div class="table-row pools-row">
+        <div><strong>${escapeHtml(pool.name)}</strong><small>${escapeHtml(pool.remark || pool.id)}</small></div>
+        <span class="badge ${pool.isActive ? 'completed' : 'failed'}">${pool.isActive ? '启用' : '停用'}</span>
+        <span title="${escapeAttr(pool.apiKey || '')}">${escapeHtml(pool.keyPreview || pool.apiKey || '-')}</span>
+        <span>${pool.activeAccountCount || 0}/${pool.accountCount || 0}</span>
+        <span>排队 ${pool.pendingTaskCount || 0} / 运行 ${pool.activeTaskCount || 0}</span>
+        <span class="row-actions"><button type="button" data-edit-pool="${escapeAttr(pool.id)}">编辑</button><button type="button" data-copy-pool-key="${escapeAttr(pool.id)}">复制Key</button><button type="button" data-delete-pool="${escapeAttr(pool.id)}">删除</button></span>
+      </div>
+    `).join('')}
+  `;
+  bindPoolActions();
+}
+
+function bindPoolActions() {
+  for (const button of $$('[data-edit-pool]')) {
+    button.addEventListener('click', () => openPoolDialog(state.pools.find((pool) => pool.id === button.dataset.editPool)));
+  }
+  for (const button of $$('[data-copy-pool-key]')) {
+    button.addEventListener('click', async () => {
+      const pool = state.pools.find((item) => item.id === button.dataset.copyPoolKey);
+      if (!pool?.apiKey) return;
+      await navigator.clipboard.writeText(pool.apiKey);
+      button.textContent = '已复制';
+      window.setTimeout(() => (button.textContent = '复制Key'), 1200);
+    });
+  }
+  for (const button of $$('[data-delete-pool]')) {
+    button.addEventListener('click', async () => {
+      if (!confirm('确认删除这个账号池？池内账号会回到默认池，历史任务保留池子ID。')) return;
+      await fetchJson(`/api/account-pools/${button.dataset.deletePool}`, { method: 'DELETE' });
+      await refreshPools();
+      await refreshAccounts();
+    });
+  }
+}
+
+function openPoolDialog(pool = null) {
+  el.poolForm.reset();
+  el.poolForm.id.value = pool?.id || '';
+  el.poolForm.name.value = pool?.name || '';
+  el.poolForm.apiKey.value = pool?.apiKey || '';
+  el.poolForm.remark.value = pool?.remark || '';
+  el.poolForm.isActive.checked = pool ? pool.isActive : true;
+  el.poolDialog.showModal();
 }
 
 function renderManualProxySelect() {
@@ -401,6 +506,7 @@ function renderManualProxySelect() {
     el.accountProxySelect.innerHTML = proxyOptions(selected);
     if (selected && state.proxies.some((proxy) => proxy.id === selected)) el.accountProxySelect.value = selected;
   }
+  renderPoolSelects();
 }
 
 function proxyOptions(selected = '') {
@@ -424,15 +530,16 @@ function renderAccounts(accounts) {
   }
   el.accounts.innerHTML = `
     <div class="table-head accounts-head">
-      <span>账号</span><span>状态</span><span>并发</span><span>本地生成数</span><span>Runway额度</span><span>代理</span><span>凭证</span><span>操作</span>
+      <span>账号</span><span>池子</span><span>状态</span><span>并发</span><span>本地生成数</span><span>今日耗时</span><span>代理</span><span>凭证</span><span>操作</span>
     </div>
     ${accounts.map((account) => `
       <div class="table-row accounts-row">
         <div><strong>${escapeHtml(account.name)}</strong><small>${escapeHtml(account.remark || account.id)}</small></div>
+        <span>${escapeHtml(poolName(account.poolId))}</span>
         <span class="badge ${account.isActive ? 'completed' : 'failed'}">${account.isActive ? '启用' : '停用'}</span>
         <span>${account.inflight || 0}/${account.maxConcurrent || 2}</span>
         <div><strong>${account.generationUsed || 0}/${account.generationLimit || 80}</strong><small>剩余 ${account.generationRemaining ?? '-'}</small><small>每日自动刷新${account.generationResetAt ? ` · ${formatDate(account.generationResetAt)}` : ''}</small></div>
-        <div class="credit-cell">${renderCreditSummary(account)}</div>
+        <div><strong>${escapeHtml(formatDuration(account.todayAvgGenerationMs))}</strong><small>今日成功 ${account.todayCompletedCount || 0}</small></div>
         <div><span>${escapeHtml(account.proxyName || '不绑定/自动')}</span><small>${escapeHtml(formatProxyStrategy(account.proxyStrategy))}</small></div>
         <div class="credential-cell">
           <span>${account.ready ? '完整' : '缺失'}</span>
@@ -492,6 +599,8 @@ async function fillAccountForm(id) {
   form.remark.value = account.remark || '';
   form.maxConcurrent.value = account.maxConcurrent || 2;
   form.generationLimit.value = account.generationLimit || 80;
+  form.poolId.innerHTML = poolOptions(account.poolId || '');
+  form.poolId.value = account.poolId || '';
   form.proxyId.innerHTML = proxyOptions(account.proxyId);
   form.proxyId.value = account.proxyId || '';
   form.proxyStrategy.value = account.proxyStrategy || 'fixed';
@@ -514,6 +623,7 @@ function accountFormBody() {
   body.isActive = form.get('isActive') === 'on';
   body.maxConcurrent = Number(body.maxConcurrent || 2);
   body.generationLimit = Number(body.generationLimit || 80);
+  body.poolId = body.poolId || null;
   body.proxyId = body.proxyId || null;
   body.teamId = body.teamId ? Number(body.teamId) : null;
   for (const key of ['requestTimeoutMs', 'uploadTimeoutMs', 'taskTimeoutMs', 'maxRetries']) {
@@ -533,7 +643,9 @@ function withoutSecrets(account) {
 function accountDetailSummary(account) {
   const rows = [
     ['账号ID', account.id],
+    ['账号池', poolName(account.poolId)],
     ['本地生成', `${account.generationUsed || 0}/${account.generationLimit || 80}，剩余 ${account.generationRemaining ?? '-'}`],
+    ['今日平均耗时', `${formatDuration(account.todayAvgGenerationMs)}（成功 ${account.todayCompletedCount || 0}）`],
     ['生成刷新', `每日自动刷新${account.generationResetAt ? `，上次 ${formatDate(account.generationResetAt)}` : ''}`],
     ['Runway额度', creditSummaryText(account.runwayCredits)],
     ['额度查询', account.runwayCreditsCheckedAt ? formatDate(account.runwayCreditsCheckedAt) : '未查询'],
@@ -548,6 +660,11 @@ function renderCreditSummary(account) {
   const text = creditSummaryText(account.runwayCredits);
   const checked = account.runwayCreditsCheckedAt ? formatDate(account.runwayCreditsCheckedAt) : '未查询';
   return `<span>${escapeHtml(text)}</span><small>${escapeHtml(checked)}</small>`;
+}
+
+function poolName(poolId) {
+  if (!poolId) return '默认池';
+  return state.pools.find((pool) => pool.id === poolId)?.name || poolId;
 }
 
 function creditSummaryText(credits = null) {
@@ -924,6 +1041,19 @@ function escapeAttr(value) {
 
 function formatDate(value) {
   return value ? new Date(value).toLocaleString('zh-CN') : '-';
+}
+
+function formatDuration(ms) {
+  const total = Number(ms);
+  if (!Number.isFinite(total) || total <= 0) return '-';
+  const seconds = Math.round(total / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  if (minutes < 60) return rest ? `${minutes}m ${rest}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const minuteRest = minutes % 60;
+  return minuteRest ? `${hours}h ${minuteRest}m` : `${hours}h`;
 }
 
 function formatStatus(status) {

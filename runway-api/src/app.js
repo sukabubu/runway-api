@@ -31,13 +31,33 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
       return reply.code(204).send();
     }
     if (isPublicRoute(pathname)) return;
-    if (pathname.startsWith('/api/') || pathname.startsWith('/auth/') || pathname.startsWith('/admin/') || (pathname.startsWith('/v1/') && pathname !== '/v1/models')) {
+    if (pathname.startsWith('/api/') || pathname.startsWith('/auth/') || pathname.startsWith('/admin/')) {
+      const auth = getRequestAuth(request);
+      if (hasAdminSession(request) || auth?.type === 'admin') {
+        request.auth = { type: 'admin', poolId: null };
+        return;
+      }
+      return reply.code(401).send({ error: 'unauthorized' });
+    }
+    if (pathname.startsWith('/v1/') && pathname !== '/v1/models') {
       if (isVideoContentRoute(pathname) && hasValidVideoAccessToken(request, pathname)) return;
-      if (hasAdminSession(request) || hasApiKey(request)) return;
+      const auth = getRequestAuth(request);
+      if (hasAdminSession(request)) {
+        request.auth = { type: 'admin', poolId: null };
+        return;
+      }
+      if (auth) {
+        request.auth = auth;
+        return;
+      }
       return reply.code(401).send(pathname.startsWith('/v1/') ? toV1Error('unauthorized', '未登录或 API Key 不正确。') : { error: 'unauthorized' });
     }
     if (pathname.startsWith('/tasks')) {
-      if (hasApiKey(request) || hasAdminSession(request)) return;
+      const auth = getRequestAuth(request);
+      if (auth || hasAdminSession(request)) {
+        request.auth = auth || { type: 'admin', poolId: null };
+        return;
+      }
       return reply.code(401).send({ error: 'unauthorized' });
     }
   });
@@ -123,10 +143,31 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
     summary: db.getAccountSummary()
   }));
 
+  app.get('/api/account-pools', async () => ({
+    pools: db.listAccountPools({ includeSecret: true })
+  }));
+
+  app.post('/api/account-pools', async (request) => ({
+    pool: db.createAccountPool(request.body || {})
+  }));
+
+  app.put('/api/account-pools/:id', async (request, reply) => {
+    const pool = db.updateAccountPool(request.params.id, request.body || {});
+    if (!pool) return reply.code(404).send({ error: 'pool not found' });
+    return { pool };
+  });
+
+  app.delete('/api/account-pools/:id', async (request, reply) => {
+    const deleted = db.deleteAccountPool(request.params.id);
+    if (!deleted) return reply.code(404).send({ error: 'pool not found' });
+    return { ok: true };
+  });
+
   app.post('/api/accounts/login-browser', async (request) => {
     const body = request.body || {};
     const account = db.createAccount({
       name: body.name || `网页登录 ${new Date().toLocaleString('zh-CN')}`,
+      poolId: body.poolId,
       remark: body.remark || '等待网页登录抓取凭证',
       maxConcurrent: body.maxConcurrent || config.defaultAccountConcurrency,
       proxyId: body.proxyId,
@@ -156,6 +197,7 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
     const jwt = normalizeBearerToken(body.authorization || body.jwt);
     const account = db.createAccount({
       name: body.name || '手动账号',
+      poolId: body.poolId,
       remark: body.remark || null,
       jwt,
       cookieHeader: normalizeCookieHeader(body.cookieHeader || body.cookie),
@@ -258,6 +300,7 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
       uploadTimeoutMs: account.uploadTimeoutMs,
       taskTimeoutMs: account.taskTimeoutMs,
       maxRetries: account.maxRetries,
+      poolId: account.poolId,
       runwayCredits: account.runwayCredits,
       runwayCreditsCheckedAt: account.runwayCreditsCheckedAt
     }))
@@ -367,7 +410,8 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
     tasks: db.listTasks({
       status: request.query.status,
       limit: request.query.limit,
-      offset: request.query.offset
+      offset: request.query.offset,
+      poolId: visiblePoolId(request)
     }).map((task) => presentTaskForResponse(task, request, config))
   }));
 
@@ -376,7 +420,8 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
     data: db.listTasks({
       status: request.query.status,
       limit: request.query.limit,
-      offset: request.query.offset
+      offset: request.query.offset,
+      poolId: visiblePoolId(request)
     }).map((task) => toV1VideoGeneration(task, { request, config }))
   }));
 
@@ -385,19 +430,22 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
     data: db.listTasks({
       status: request.query.status,
       limit: request.query.limit,
-      offset: request.query.offset
+      offset: request.query.offset,
+      poolId: visiblePoolId(request)
     }).map((task) => toV1Video(task, { request, config }))
   }));
 
   app.get('/tasks/:id', async (request, reply) => {
     const task = await getFreshTaskForRead({ db, runway, id: request.params.id });
     if (!task) return reply.code(404).send({ error: 'task not found' });
+    if (!canAccessTask(request, task)) return reply.code(404).send({ error: 'task not found' });
     return presentTaskForResponse(task, request, config);
   });
 
   app.get('/v1/videos/generations/:id', async (request, reply) => {
     const task = await getFreshTaskForRead({ db, runway, id: request.params.id });
     if (!task) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
+    if (!canAccessTask(request, task)) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
     return toV1VideoGeneration(task, { request, config });
   });
 
@@ -409,24 +457,27 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
   app.get('/v1/videos/:id', async (request, reply) => {
     const task = await getFreshTaskForRead({ db, runway, id: request.params.id });
     if (!task) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
+    if (!canAccessTask(request, task)) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
     return toV1Video(task, { request, config });
   });
 
   app.get('/tasks/:id/events', async (request, reply) => {
     const task = db.getTask(request.params.id);
     if (!task) return reply.code(404).send({ error: 'task not found' });
+    if (!canAccessTask(request, task)) return reply.code(404).send({ error: 'task not found' });
     return { events: db.getTaskEvents(request.params.id) };
   });
 
   app.get('/v1/videos/:id/events', async (request, reply) => {
     const task = db.getTask(request.params.id);
     if (!task) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
+    if (!canAccessTask(request, task)) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
     return { object: 'list', data: db.getTaskEvents(request.params.id) };
   });
 
   app.post('/tasks', async (request, reply) => {
     const { fields, files } = await readMultipartTask(request, config.uploadDir);
-    const task = createPendingTask({ db, fields, files });
+    const task = createPendingTask({ db, fields, files, auth: request.auth });
     return reply.code(202).send({
       id: task.id,
       runwayTaskId: null,
@@ -437,19 +488,20 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
 
   app.post('/v1/videos/generations', async (request, reply) => {
     const { fields, files } = await readTaskRequest(request, config.uploadDir);
-    const task = createPendingTask({ db, fields, files });
+    const task = createPendingTask({ db, fields, files, auth: request.auth });
     return reply.code(202).send(toV1VideoGeneration(task, { request, config }));
   });
 
   app.post('/v1/videos', async (request, reply) => {
     const { fields, files } = await readTaskRequest(request, config.uploadDir);
-    const task = createPendingTask({ db, fields, files });
+    const task = createPendingTask({ db, fields, files, auth: request.auth });
     return reply.code(202).send(toV1Video(task, { request, config }));
   });
 
   app.post('/tasks/:id/retry', async (request, reply) => {
     const original = db.getTask(request.params.id);
     if (!original) return reply.code(404).send({ error: 'task not found' });
+    if (!canAccessTask(request, original)) return reply.code(404).send({ error: 'task not found' });
     if (original.status !== 'failed') {
       return reply.code(409).send({ error: 'only failed tasks can be retried' });
     }
@@ -458,6 +510,9 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
   });
 
   app.post('/tasks/:id/cancel', async (request, reply) => {
+    const current = db.getTask(request.params.id);
+    if (!current) return reply.code(404).send({ error: 'task not found' });
+    if (!canAccessTask(request, current)) return reply.code(404).send({ error: 'task not found' });
     const task = await cancelTask({ db, runway, id: request.params.id });
     if (!task) return reply.code(404).send({ error: 'task not found' });
     return task;
@@ -466,6 +521,7 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
   app.post('/v1/videos/generations/:id/retry', async (request, reply) => {
     const original = db.getTask(request.params.id);
     if (!original) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
+    if (!canAccessTask(request, original)) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
     if (original.status !== 'failed') {
       return reply.code(409).send(toV1Error('invalid_state', '只有失败任务可以重试。'));
     }
@@ -473,6 +529,9 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
   });
 
   app.post('/v1/videos/generations/:id/cancel', async (request, reply) => {
+    const current = db.getTask(request.params.id);
+    if (!current) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
+    if (!canAccessTask(request, current)) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
     const task = await cancelTask({ db, runway, id: request.params.id });
     if (!task) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
     return toV1VideoGeneration(task, { request, config });
@@ -481,6 +540,7 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
   app.post('/v1/videos/:id/retry', async (request, reply) => {
     const original = db.getTask(request.params.id);
     if (!original) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
+    if (!canAccessTask(request, original)) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
     if (original.status !== 'failed') {
       return reply.code(409).send(toV1Error('invalid_state', '只有失败任务可以重试。'));
     }
@@ -488,6 +548,9 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
   });
 
   app.post('/v1/videos/:id/cancel', async (request, reply) => {
+    const current = db.getTask(request.params.id);
+    if (!current) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
+    if (!canAccessTask(request, current)) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
     const task = await cancelTask({ db, runway, id: request.params.id });
     if (!task) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
     return toV1Video(task, { request, config });
@@ -520,10 +583,15 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
     return Boolean(getAdminSession(request));
   }
 
-  function hasApiKey(request) {
+  function getRequestAuth(request) {
     const auth = request.headers.authorization || '';
     const configured = db.getAdminConfig().api_key || config.internalApiKey;
-    return auth === `Bearer ${configured}` || auth === `Bearer ${config.internalApiKey}`;
+    const token = auth.replace(/^Bearer\s+/i, '').trim();
+    if (!token) return null;
+    if (token === configured || token === config.internalApiKey) return { type: 'admin', poolId: null };
+    const pool = db.getAccountPoolByApiKey?.(token);
+    if (pool?.isActive) return { type: 'pool', poolId: pool.id, pool };
+    return null;
   }
 
   function hasValidVideoAccessToken(request, pathname) {
@@ -777,17 +845,28 @@ function extensionForMimeType(mimeType) {
   }[mimeType] || '.bin';
 }
 
-function createPendingTask({ db, fields, files }) {
+function createPendingTask({ db, fields, files, auth = null }) {
   const taskConfig = normalizeTaskInput(fields);
   const accountId = fields.accountId && fields.accountId !== 'auto' ? String(fields.accountId) : null;
-  if (accountId && !db.getAccount(accountId)) {
+  const account = accountId ? db.getAccount(accountId) : null;
+  const requestedPoolId = normalizeOptionalId(fields.poolId ?? fields.pool_id);
+  const poolId = auth?.type === 'pool'
+    ? auth.poolId
+    : (requestedPoolId ?? normalizeOptionalId(account?.poolId));
+  if (accountId && !account) {
     const err = new Error('account not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  if (account && normalizeOptionalId(account.poolId) !== poolId) {
+    const err = new Error('account not found in requested pool');
     err.statusCode = 404;
     throw err;
   }
   const task = db.createTask({
     id: randomUUID(),
     status: 'pending',
+    poolId,
     accountId,
     ...taskConfig
   });
@@ -801,6 +880,7 @@ function createRetryTask({ db, original }) {
   const retry = db.createTask({
     id: randomUUID(),
     parentTaskId: original.id,
+    poolId: original.poolId,
     accountId: original.accountId,
     status: 'pending',
     prompt: original.prompt,
@@ -1009,6 +1089,15 @@ async function cancelTask({ db, runway, id }) {
   });
 }
 
+function visiblePoolId(request) {
+  return request.auth?.type === 'pool' ? request.auth.poolId : undefined;
+}
+
+function canAccessTask(request, task) {
+  if (!request.auth || request.auth.type === 'admin') return true;
+  return normalizeOptionalId(task.poolId) === normalizeOptionalId(request.auth.poolId);
+}
+
 async function getFreshTaskForRead({ db, runway, id }) {
   const task = db.getTask(id);
   if (!task || !shouldRefreshSignedUrls(task, runway)) return task;
@@ -1061,6 +1150,7 @@ function shouldRefreshSignedUrls(task, runway) {
 async function streamTaskMedia({ db, runway, request, reply, kind }) {
   const task = await getFreshTaskForRead({ db, runway, id: request.params.id });
   if (!task) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
+  if (!canAccessTask(request, task)) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
   if (task.status !== 'completed') return reply.code(409).send(toV1Error('task_not_completed', '任务还没有完成。'));
 
   const sourceUrl = kind === 'thumbnail' ? task.thumbnailUrl : task.videoUrl;
@@ -1098,6 +1188,7 @@ function presentTaskForResponse(task, request, config) {
 
 function normalizeAccountPatch(body) {
   const patch = {
+    poolId: body.poolId,
     name: body.name,
     remark: body.remark,
     teamId: body.teamId,
@@ -1419,6 +1510,7 @@ function normalizeImportedAccount(item, index, db) {
     maxConcurrent: pickFirst(item, credentials, ['maxConcurrent', 'max_concurrent', 'concurrency']),
     proxyId: pickFirst(item, credentials, ['proxyId', 'proxy_id']) || null,
     proxyStrategy: pickFirst(item, credentials, ['proxyStrategy', 'proxy_strategy']),
+    poolId: pickFirst(item, credentials, ['poolId', 'pool_id', 'accountPoolId', 'account_pool_id']) || null,
     generationLimit: pickFirst(item, credentials, ['generationLimit', 'generation_limit', 'limit']),
     generationUsed: pickFirst(item, credentials, ['generationUsed', 'generation_used', 'used']),
     requestTimeoutMs: pickFirst(item, credentials, ['requestTimeoutMs', 'request_timeout_ms']),
@@ -1502,6 +1594,11 @@ function normalizeCookieHeader(value) {
   const raw = String(value || '').trim();
   if (!raw) return null;
   return raw.replace(/^Cookie:\s*/i, '').trim();
+}
+
+function normalizeOptionalId(value) {
+  if (value == null || value === '' || value === 'default' || value === 'none') return null;
+  return String(value).trim() || null;
 }
 
 function normalizeOptionalImportString(value) {

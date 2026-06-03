@@ -43,6 +43,7 @@ export function loadConfig(env = process.env) {
     pollIntervalSlowMs: int(env.RUNWAY_POLL_INTERVAL_SLOW_MS, 20000),
     submitIntervalMinMs: int(env.RUNWAY_SUBMIT_INTERVAL_MIN_MS, 3000),
     submitIntervalMaxMs: int(env.RUNWAY_SUBMIT_INTERVAL_MAX_MS, 8000),
+    upstreamAutoRetryAttempts: int(env.RUNWAY_UPSTREAM_AUTO_RETRY_ATTEMPTS, 3),
     queueLeaseTimeoutMs: int(env.RUNWAY_QUEUE_LEASE_TIMEOUT_MS, 120000),
     staleTaskTimeoutMs: int(env.RUNWAY_STALE_TASK_TIMEOUT_MS, 1800000),
     logRetentionDays: int(env.LOG_RETENTION_DAYS, 14),

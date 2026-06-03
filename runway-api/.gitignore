@@ -2,3 +2,5 @@ node_modules/
 .npm-cache/
 data/
 .env
+runtime.log
+runtime.pid

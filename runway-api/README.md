@@ -108,6 +108,29 @@ curl -H "Authorization: Bearer change-me" \
   http://127.0.0.1:8790/v1/videos/<task-id>
 ```
 
+取消任务：
+
+```bash
+curl -X POST http://127.0.0.1:8790/v1/videos/<task-id>/cancel \
+  -H "Authorization: Bearer change-me" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+兼容路径也支持：
+
+- `POST /v1/videos/generations/<task-id>/cancel`
+- `POST /tasks/<task-id>/cancel`
+
+取消逻辑：
+
+- 如果任务还没有提交到 Runway，只会取消本地队列任务。
+- 如果任务已经有 `runway_task_id`，服务会用该任务绑定的账号同步请求 Runway 上游取消。
+- 上游取消成功时，本地任务会变成 `cancelled`，任务错误信息中会记录类似 `runwayResponse: { ok: true, rawResponse: { success: true } }`。
+- 如果上游取消失败，本地仍会变成 `cancelled`，错误信息会提示 `本地已取消；Runway 取消请求失败，请到 Runway 后台确认任务状态`。
+
+注意：如果客户端发送了 `Content-Type: application/json`，请求体不能留空，建议固定传 `-d '{}'`；否则 Fastify 会在进入取消逻辑前返回空 JSON body 错误。
+
 任务完成后的 `video_url` / `thumbnail_url` 默认是本服务代理地址，例如 `https://your-domain.com/v1/videos/<task-id>/content?...`。后端会在访问代理地址时刷新 Runway 签名 URL 并转发视频流，因此业务方不会直接看到 Runway 原始签名 URL 或 JWT。生产部署请设置：
 
 ```env

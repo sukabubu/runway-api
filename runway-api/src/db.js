@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { normalizeTaskError } from './errors.js';
 
@@ -62,6 +62,7 @@ export class RunwayDatabase {
 
       CREATE TABLE IF NOT EXISTS accounts (
         id TEXT PRIMARY KEY,
+        pool_id TEXT,
         name TEXT NOT NULL,
         remark TEXT,
         jwt TEXT,
@@ -88,6 +89,7 @@ export class RunwayDatabase {
         consecutive_error_count INTEGER NOT NULL DEFAULT 0,
         last_error TEXT,
         last_auth_failed_at TEXT,
+        submit_cooldown_until TEXT,
         last_used_at TEXT,
         captured_at TEXT,
         created_at TEXT NOT NULL,
@@ -104,6 +106,16 @@ export class RunwayDatabase {
         error_count INTEGER NOT NULL DEFAULT 0,
         last_used_at TEXT,
         last_error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS account_pools (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        api_key TEXT NOT NULL UNIQUE,
+        remark TEXT,
+        is_active INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -160,6 +172,7 @@ export class RunwayDatabase {
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
         parent_task_id TEXT,
+        pool_id TEXT,
         account_id TEXT,
         runway_task_id TEXT,
         status TEXT NOT NULL,
@@ -212,6 +225,7 @@ export class RunwayDatabase {
     `);
 
     this.addColumnIfMissing('tasks', 'account_id', 'TEXT');
+    this.addColumnIfMissing('tasks', 'pool_id', 'TEXT');
     this.addColumnIfMissing('tasks', 'locked_by', 'TEXT');
     this.addColumnIfMissing('tasks', 'locked_at', 'TEXT');
     this.addColumnIfMissing('tasks', 'attempt_count', 'INTEGER NOT NULL DEFAULT 0');
@@ -219,6 +233,7 @@ export class RunwayDatabase {
     this.addColumnIfMissing('assets', 'account_id', 'TEXT');
     this.addColumnIfMissing('assets', 'media_type', 'TEXT');
     this.addColumnIfMissing('accounts', 'cookie_header', 'TEXT');
+    this.addColumnIfMissing('accounts', 'pool_id', 'TEXT');
     this.addColumnIfMissing('accounts', 'proxy_id', 'TEXT');
     this.addColumnIfMissing('accounts', 'proxy_strategy', "TEXT NOT NULL DEFAULT 'fixed'");
     this.addColumnIfMissing('accounts', 'generation_limit', 'INTEGER NOT NULL DEFAULT 80');
@@ -231,6 +246,7 @@ export class RunwayDatabase {
     this.addColumnIfMissing('accounts', 'runway_credits_json', 'TEXT');
     this.addColumnIfMissing('accounts', 'runway_credits_checked_at', 'TEXT');
     this.addColumnIfMissing('accounts', 'last_auth_failed_at', 'TEXT');
+    this.addColumnIfMissing('accounts', 'submit_cooldown_until', 'TEXT');
     this.addColumnIfMissing('request_logs', 'proxy_id', 'TEXT');
     this.addColumnIfMissing('request_logs', 'status_code', 'INTEGER');
     this.addColumnIfMissing('request_logs', 'duration_ms', 'INTEGER');
@@ -242,6 +258,8 @@ export class RunwayDatabase {
     this.addColumnIfMissing('runtime_config', 'upload_retention_days', 'INTEGER NOT NULL DEFAULT 7');
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_tasks_queue ON tasks(status, locked_at, created_at);
+      CREATE INDEX IF NOT EXISTS idx_tasks_pool_status ON tasks(pool_id, status, created_at);
+      CREATE INDEX IF NOT EXISTS idx_accounts_pool ON accounts(pool_id);
       CREATE INDEX IF NOT EXISTS idx_tasks_account_status ON tasks(account_id, status);
       CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_request_logs_created ON request_logs(created_at);
@@ -464,28 +482,118 @@ export class RunwayDatabase {
     this.db.prepare('DELETE FROM admin_sessions WHERE id = ?').run(id);
   }
 
+  createAccountPool(input = {}) {
+    const now = new Date().toISOString();
+    const id = input.id || randomUUID();
+    const apiKey = normalizeApiKey(input.apiKey ?? input.api_key) || generatePoolApiKey();
+    this.db.prepare(`
+      INSERT INTO account_pools (id, name, api_key, remark, is_active, created_at, updated_at)
+      VALUES (@id, @name, @apiKey, @remark, @isActive, @createdAt, @updatedAt)
+    `).run({
+      id,
+      name: input.name || '账号池',
+      apiKey,
+      remark: input.remark ?? null,
+      isActive: normalizeBooleanFlag(input.isActive ?? input.is_active, 1),
+      createdAt: input.createdAt ?? input.created_at ?? now,
+      updatedAt: now
+    });
+    return this.getAccountPool(id, { includeSecret: true });
+  }
+
+  listAccountPools({ includeSecret = false } = {}) {
+    return this.db.prepare(`
+      SELECT account_pools.*,
+        (SELECT COUNT(*) FROM accounts WHERE accounts.pool_id = account_pools.id) AS account_count,
+        (SELECT COUNT(*) FROM accounts WHERE accounts.pool_id = account_pools.id AND accounts.is_active = 1) AS active_account_count,
+        (SELECT COUNT(*) FROM tasks WHERE tasks.pool_id = account_pools.id AND tasks.status = 'pending') AS pending_task_count,
+        (SELECT COUNT(*) FROM tasks WHERE tasks.pool_id = account_pools.id AND tasks.status IN ('submitting', 'queuing', 'generating')) AS active_task_count
+      FROM account_pools
+      ORDER BY account_pools.created_at ASC
+    `).all().map((row) => hydrateAccountPool(row, { includeSecret }));
+  }
+
+  getAccountPool(id, { includeSecret = false } = {}) {
+    if (!id) return null;
+    const row = this.db.prepare(`
+      SELECT account_pools.*,
+        (SELECT COUNT(*) FROM accounts WHERE accounts.pool_id = account_pools.id) AS account_count,
+        (SELECT COUNT(*) FROM accounts WHERE accounts.pool_id = account_pools.id AND accounts.is_active = 1) AS active_account_count,
+        (SELECT COUNT(*) FROM tasks WHERE tasks.pool_id = account_pools.id AND tasks.status = 'pending') AS pending_task_count,
+        (SELECT COUNT(*) FROM tasks WHERE tasks.pool_id = account_pools.id AND tasks.status IN ('submitting', 'queuing', 'generating')) AS active_task_count
+      FROM account_pools
+      WHERE account_pools.id = ?
+    `).get(id);
+    return row ? hydrateAccountPool(row, { includeSecret }) : null;
+  }
+
+  getAccountPoolByApiKey(apiKey, { includeSecret = false } = {}) {
+    const key = normalizeApiKey(apiKey);
+    if (!key) return null;
+    const row = this.db.prepare(`
+      SELECT account_pools.*,
+        (SELECT COUNT(*) FROM accounts WHERE accounts.pool_id = account_pools.id) AS account_count,
+        (SELECT COUNT(*) FROM accounts WHERE accounts.pool_id = account_pools.id AND accounts.is_active = 1) AS active_account_count,
+        (SELECT COUNT(*) FROM tasks WHERE tasks.pool_id = account_pools.id AND tasks.status = 'pending') AS pending_task_count,
+        (SELECT COUNT(*) FROM tasks WHERE tasks.pool_id = account_pools.id AND tasks.status IN ('submitting', 'queuing', 'generating')) AS active_task_count
+      FROM account_pools
+      WHERE api_key = ?
+    `).get(key);
+    return row ? hydrateAccountPool(row, { includeSecret }) : null;
+  }
+
+  updateAccountPool(id, patch = {}) {
+    const current = this.getAccountPool(id, { includeSecret: true });
+    if (!current) return null;
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      UPDATE account_pools SET
+        name = @name,
+        api_key = @apiKey,
+        remark = @remark,
+        is_active = @isActive,
+        updated_at = @updatedAt
+      WHERE id = @id
+    `).run({
+      id,
+      name: patch.name ?? current.name,
+      apiKey: normalizeApiKey(patch.apiKey ?? patch.api_key ?? current.apiKey),
+      remark: pickPatchValue(patch, ['remark'], current.remark ?? null),
+      isActive: normalizeBooleanFlag(patch.isActive ?? patch.is_active, current.isActive ? 1 : 0),
+      updatedAt: now
+    });
+    return this.getAccountPool(id, { includeSecret: true });
+  }
+
+  deleteAccountPool(id) {
+    const result = this.db.prepare('DELETE FROM account_pools WHERE id = ?').run(id);
+    this.db.prepare('UPDATE accounts SET pool_id = NULL, updated_at = ? WHERE pool_id = ?').run(new Date().toISOString(), id);
+    return result.changes > 0;
+  }
+
   createAccount(input = {}) {
     const now = new Date().toISOString();
     const id = input.id || randomUUID();
     const runtime = this.getRuntimeConfig();
     this.db.prepare(`
       INSERT INTO accounts (
-        id, name, remark, jwt, cookie_header, team_id, asset_group_id, client_id, source_application_version,
+        id, pool_id, name, remark, jwt, cookie_header, team_id, asset_group_id, client_id, source_application_version,
         is_active, max_concurrent, proxy_id, proxy_strategy, generation_limit, generation_used,
         generation_reset_at, request_timeout_ms, upload_timeout_ms, task_timeout_ms, max_retries,
         runway_credits_json, runway_credits_checked_at,
-        inflight, error_count, consecutive_error_count, last_error, last_auth_failed_at, last_used_at,
+        inflight, error_count, consecutive_error_count, last_error, last_auth_failed_at, submit_cooldown_until, last_used_at,
         captured_at, created_at, updated_at
       ) VALUES (
-        @id, @name, @remark, @jwt, @cookieHeader, @teamId, @assetGroupId, @clientId, @sourceApplicationVersion,
+        @id, @poolId, @name, @remark, @jwt, @cookieHeader, @teamId, @assetGroupId, @clientId, @sourceApplicationVersion,
         @isActive, @maxConcurrent, @proxyId, @proxyStrategy, @generationLimit, @generationUsed,
         @generationResetAt, @requestTimeoutMs, @uploadTimeoutMs, @taskTimeoutMs, @maxRetries,
         @runwayCreditsJson, @runwayCreditsCheckedAt,
-        @inflight, @errorCount, @consecutiveErrorCount, @lastError, @lastAuthFailedAt, @lastUsedAt,
+        @inflight, @errorCount, @consecutiveErrorCount, @lastError, @lastAuthFailedAt, @submitCooldownUntil, @lastUsedAt,
         @capturedAt, @createdAt, @updatedAt
       )
     `).run({
       id,
+      poolId: normalizePoolId(input.poolId ?? input.pool_id),
       name: input.name || 'Runway 账号',
       remark: input.remark || null,
       jwt: input.jwt || null,
@@ -513,6 +621,7 @@ export class RunwayDatabase {
       consecutiveErrorCount: Math.max(Number(input.consecutiveErrorCount ?? input.consecutive_error_count) || 0, 0),
       lastError: input.lastError ?? input.last_error ?? null,
       lastAuthFailedAt: input.lastAuthFailedAt ?? input.last_auth_failed_at ?? null,
+      submitCooldownUntil: input.submitCooldownUntil ?? input.submit_cooldown_until ?? null,
       lastUsedAt: input.lastUsedAt ?? input.last_used_at ?? null,
       capturedAt: input.capturedAt ?? input.captured_at ?? (input.jwt || input.cookieHeader || input.cookie_header || input.cookie ? now : null),
       createdAt: input.createdAt ?? input.created_at ?? now,
@@ -523,23 +632,59 @@ export class RunwayDatabase {
 
   listAccounts({ includeSecret = false } = {}) {
     this.resetExpiredGenerationUsage();
+    const todayKey = quotaDayKey();
     const rows = this.db.prepare(`
-      SELECT accounts.*, proxies.name AS proxy_name, proxies.url AS proxy_url
+      SELECT accounts.*, proxies.name AS proxy_name, proxies.url AS proxy_url,
+        (
+          SELECT COUNT(*) FROM tasks
+          WHERE tasks.account_id = accounts.id
+            AND tasks.status = 'completed'
+            AND tasks.completed_at IS NOT NULL
+            AND date(tasks.completed_at, '+8 hours') = @todayKey
+        ) AS today_completed_count,
+        (
+          SELECT AVG((julianday(tasks.completed_at) - julianday(tasks.submitted_at)) * 86400000.0)
+          FROM tasks
+          WHERE tasks.account_id = accounts.id
+            AND tasks.status = 'completed'
+            AND tasks.completed_at IS NOT NULL
+            AND tasks.submitted_at IS NOT NULL
+            AND julianday(tasks.completed_at) >= julianday(tasks.submitted_at)
+            AND date(tasks.completed_at, '+8 hours') = @todayKey
+        ) AS today_avg_generation_ms
       FROM accounts
       LEFT JOIN proxies ON proxies.id = accounts.proxy_id
       ORDER BY accounts.created_at ASC
-    `).all();
+    `).all({ todayKey });
     return rows.map((row) => hydrateAccount(row, { includeSecret }));
   }
 
   getAccount(id, { includeSecret = false } = {}) {
     this.resetExpiredGenerationUsage(id);
+    const todayKey = quotaDayKey();
     const row = this.db.prepare(`
-      SELECT accounts.*, proxies.name AS proxy_name, proxies.url AS proxy_url
+      SELECT accounts.*, proxies.name AS proxy_name, proxies.url AS proxy_url,
+        (
+          SELECT COUNT(*) FROM tasks
+          WHERE tasks.account_id = accounts.id
+            AND tasks.status = 'completed'
+            AND tasks.completed_at IS NOT NULL
+            AND date(tasks.completed_at, '+8 hours') = @todayKey
+        ) AS today_completed_count,
+        (
+          SELECT AVG((julianday(tasks.completed_at) - julianday(tasks.submitted_at)) * 86400000.0)
+          FROM tasks
+          WHERE tasks.account_id = accounts.id
+            AND tasks.status = 'completed'
+            AND tasks.completed_at IS NOT NULL
+            AND tasks.submitted_at IS NOT NULL
+            AND julianday(tasks.completed_at) >= julianday(tasks.submitted_at)
+            AND date(tasks.completed_at, '+8 hours') = @todayKey
+        ) AS today_avg_generation_ms
       FROM accounts
       LEFT JOIN proxies ON proxies.id = accounts.proxy_id
-      WHERE accounts.id = ?
-    `).get(id);
+      WHERE accounts.id = @id
+    `).get({ id, todayKey });
     return row ? hydrateAccount(row, { includeSecret }) : null;
   }
 
@@ -549,6 +694,7 @@ export class RunwayDatabase {
     const now = new Date().toISOString();
     this.db.prepare(`
       UPDATE accounts SET
+        pool_id = @poolId,
         name = @name,
         remark = @remark,
         jwt = @jwt,
@@ -575,12 +721,14 @@ export class RunwayDatabase {
         consecutive_error_count = @consecutiveErrorCount,
         last_error = @lastError,
         last_auth_failed_at = @lastAuthFailedAt,
+        submit_cooldown_until = @submitCooldownUntil,
         last_used_at = @lastUsedAt,
         captured_at = @capturedAt,
         updated_at = @updatedAt
       WHERE id = @id
     `).run({
       id,
+      poolId: normalizePoolId(pickPatchValue(patch, ['poolId', 'pool_id'], current.poolId ?? null)),
       name: patch.name ?? current.name,
       remark: patch.remark ?? current.remark,
       jwt: patch.jwt ?? current.jwt ?? null,
@@ -611,6 +759,7 @@ export class RunwayDatabase {
       consecutiveErrorCount: Math.max(Number(patch.consecutiveErrorCount ?? patch.consecutive_error_count ?? current.consecutiveErrorCount) || 0, 0),
       lastError: pickPatchValue(patch, ['lastError', 'last_error'], current.lastError ?? null),
       lastAuthFailedAt: pickPatchValue(patch, ['lastAuthFailedAt', 'last_auth_failed_at'], current.lastAuthFailedAt ?? null),
+      submitCooldownUntil: pickPatchValue(patch, ['submitCooldownUntil', 'submit_cooldown_until'], current.submitCooldownUntil ?? null),
       lastUsedAt: patch.lastUsedAt ?? patch.last_used_at ?? current.lastUsedAt ?? null,
       capturedAt: patch.capturedAt ?? patch.captured_at ?? current.capturedAt ?? (patch.jwt || patch.cookieHeader || patch.cookie_header || patch.cookie ? now : null),
       updatedAt: now
@@ -683,6 +832,7 @@ export class RunwayDatabase {
   upsertAccountCredentials(id, patch = {}) {
     const account = this.getAccount(id, { includeSecret: true }) || this.createAccount({ id, name: 'Runway 账号' });
     const next = this.updateAccount(account.id, {
+      poolId: patch.poolId ?? patch.pool_id ?? account.poolId,
       jwt: patch.jwt ?? account.jwt,
       cookieHeader: patch.cookieHeader ?? patch.cookie_header ?? patch.cookie ?? account.cookieHeader,
       teamId: patch.teamId ?? patch.team_id ?? account.teamId,
@@ -762,8 +912,11 @@ export class RunwayDatabase {
     return credentialStatus(row);
   }
 
-  getAccountSummary() {
+  getAccountSummary({ poolId = undefined } = {}) {
     this.resetExpiredGenerationUsage();
+    const normalizedPoolId = normalizePoolId(poolId);
+    const poolFilter = poolId === undefined ? '' : normalizedPoolId ? 'WHERE pool_id = @poolId' : 'WHERE pool_id IS NULL';
+    const taskPoolFilter = poolId === undefined ? '' : normalizedPoolId ? 'AND pool_id = @poolId' : 'AND pool_id IS NULL';
     const summary = this.db.prepare(`
       SELECT
         COUNT(*) AS total,
@@ -775,8 +928,20 @@ export class RunwayDatabase {
         COALESCE(SUM(generation_used), 0) AS generation_used,
         COALESCE(SUM(generation_limit), 0) AS generation_limit
       FROM accounts
-    `).get();
-    const pending = this.db.prepare("SELECT COUNT(*) AS count FROM tasks WHERE status = 'pending'").get().count;
+      ${poolFilter}
+    `).get({ poolId: normalizedPoolId });
+    const pending = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM tasks
+      WHERE status = 'pending'
+        ${taskPoolFilter}
+    `).get({ poolId: normalizedPoolId }).count;
+    const todayCompleted = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM tasks
+      WHERE status = 'completed'
+        AND completed_at IS NOT NULL
+        AND date(completed_at, '+8 hours') = @todayKey
+        ${taskPoolFilter}
+    `).get({ poolId: normalizedPoolId, todayKey: quotaDayKey() }).count;
     return {
       total: summary.total || 0,
       active: summary.active || 0,
@@ -787,6 +952,7 @@ export class RunwayDatabase {
       generationUsed: summary.generation_used || 0,
       generationLimit: summary.generation_limit || 0,
       generationRemaining: Math.max((summary.generation_limit || 0) - (summary.generation_used || 0), 0),
+      todayCompletedTasks: todayCompleted || 0,
       pendingTasks: pending || 0
     };
   }
@@ -901,8 +1067,11 @@ export class RunwayDatabase {
     return { total: row.total || 0, active: row.active || 0 };
   }
 
-  getReadyAccounts({ includeSecret = true } = {}) {
+  getReadyAccounts({ includeSecret = true, poolId = undefined } = {}) {
     this.resetExpiredGenerationUsage();
+    const now = new Date().toISOString();
+    const normalizedPoolId = normalizePoolId(poolId);
+    const poolFilter = poolId === undefined ? '' : normalizedPoolId ? 'AND accounts.pool_id = @poolId' : 'AND accounts.pool_id IS NULL';
     const rows = this.db.prepare(`
       SELECT accounts.*, proxies.name AS proxy_name, proxies.url AS proxy_url
       FROM accounts
@@ -910,7 +1079,9 @@ export class RunwayDatabase {
       WHERE accounts.is_active = 1
         AND (accounts.jwt IS NOT NULL OR accounts.cookie_header IS NOT NULL)
         AND accounts.team_id IS NOT NULL
+        AND (accounts.submit_cooldown_until IS NULL OR accounts.submit_cooldown_until <= @now)
         AND accounts.generation_used < accounts.generation_limit
+        ${poolFilter}
       ORDER BY (inflight + (
         SELECT COUNT(*) FROM tasks
         WHERE tasks.account_id = accounts.id AND tasks.status = 'pending'
@@ -919,17 +1090,19 @@ export class RunwayDatabase {
       CASE WHEN accounts.last_used_at IS NULL THEN RANDOM() ELSE 0 END,
       accounts.last_used_at ASC,
       RANDOM()
-    `).all();
+    `).all({ now, poolId: normalizedPoolId });
     return rows.map((row) => hydrateAccount(row, { includeSecret }));
   }
 
-  selectLeastLoadedAccount({ preferredAccountId = null } = {}) {
+  selectLeastLoadedAccount({ preferredAccountId = null, poolId = undefined } = {}) {
     this.resetExpiredGenerationUsage(preferredAccountId);
+    const normalizedPoolId = normalizePoolId(poolId);
     const candidates = preferredAccountId
       ? [this.getAccount(preferredAccountId, { includeSecret: true })].filter(Boolean)
-      : this.getReadyAccounts({ includeSecret: true });
+      : this.getReadyAccounts({ includeSecret: true, poolId });
     for (const account of candidates) {
       if (!isReadyAccount(account)) continue;
+      if (poolId !== undefined && normalizePoolId(account.poolId) !== normalizedPoolId) continue;
       const inflight = Number(account.inflight) || 0;
       const maxConcurrent = normalizeConcurrency(account.maxConcurrent);
       if (inflight >= maxConcurrent) continue;
@@ -938,8 +1111,10 @@ export class RunwayDatabase {
     return null;
   }
 
-  acquireAccountForTask(taskId, { preferredAccountId = null } = {}) {
-    const account = this.selectLeastLoadedAccount({ preferredAccountId });
+  acquireAccountForTask(taskId, { preferredAccountId = null, poolId = undefined } = {}) {
+    const task = this.getTask(taskId);
+    const effectivePoolId = poolId === undefined ? task?.poolId ?? null : normalizePoolId(poolId);
+    const account = this.selectLeastLoadedAccount({ preferredAccountId, poolId: effectivePoolId });
     if (!account) return null;
     const now = new Date().toISOString();
     const result = this.db.prepare(`
@@ -949,9 +1124,11 @@ export class RunwayDatabase {
         AND is_active = 1
         AND (jwt IS NOT NULL OR cookie_header IS NOT NULL)
         AND team_id IS NOT NULL
+        AND (submit_cooldown_until IS NULL OR submit_cooldown_until <= @now)
         AND inflight < max_concurrent
         AND generation_used < generation_limit
-    `).run({ id: account.id, now });
+        AND ${effectivePoolId ? 'pool_id = @poolId' : 'pool_id IS NULL'}
+    `).run({ id: account.id, now, poolId: effectivePoolId });
     if (result.changes === 0) return null;
     this.db.prepare('UPDATE tasks SET account_id = ?, updated_at = ? WHERE id = ?').run(account.id, now, taskId);
     this.db.prepare('UPDATE assets SET account_id = ?, updated_at = ? WHERE task_id = ?').run(account.id, now, taskId);
@@ -974,8 +1151,6 @@ export class RunwayDatabase {
     this.db.prepare(`
       UPDATE accounts SET
         is_active = 0,
-        jwt = NULL,
-        cookie_header = NULL,
         error_count = error_count + 1,
         consecutive_error_count = consecutive_error_count + 1,
         last_error = @message,
@@ -999,11 +1174,32 @@ export class RunwayDatabase {
     `).run({ accountId, message, now });
   }
 
+  setAccountSubmitCooldown(accountId, until, message = null) {
+    if (!accountId) return;
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      UPDATE accounts SET
+        submit_cooldown_until = @until,
+        last_error = COALESCE(@message, last_error),
+        updated_at = @now
+      WHERE id = @accountId
+    `).run({ accountId, until: until ? new Date(until).toISOString() : null, message, now });
+  }
+
+  clearAccountSubmitCooldown(accountId) {
+    if (!accountId) return;
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      UPDATE accounts SET submit_cooldown_until = NULL, updated_at = @now
+      WHERE id = @accountId
+    `).run({ accountId, now });
+  }
+
   markAccountSuccess(accountId) {
     if (!accountId) return;
     const now = new Date().toISOString();
     this.db.prepare(`
-      UPDATE accounts SET consecutive_error_count = 0, last_error = NULL, updated_at = ?
+      UPDATE accounts SET consecutive_error_count = 0, last_error = NULL, submit_cooldown_until = NULL, updated_at = ?
       WHERE id = ?
     `).run(now, accountId);
   }
@@ -1024,17 +1220,18 @@ export class RunwayDatabase {
     const now = new Date().toISOString();
     this.db.prepare(`
       INSERT INTO tasks (
-        id, parent_task_id, account_id, runway_task_id, status, raw_status, prompt, model, duration,
+        id, parent_task_id, pool_id, account_id, runway_task_id, status, raw_status, prompt, model, duration,
         resolution, aspect_ratio, generate_audio, explore_mode, progress, video_url,
         thumbnail_url, error, raw_response, created_at, updated_at, submitted_at, completed_at
       ) VALUES (
-        @id, @parentTaskId, @accountId, @runwayTaskId, @status, @rawStatus, @prompt, @model, @duration,
+        @id, @parentTaskId, @poolId, @accountId, @runwayTaskId, @status, @rawStatus, @prompt, @model, @duration,
         @resolution, @aspectRatio, @generateAudio, @exploreMode, @progress, @videoUrl,
         @thumbnailUrl, @error, @rawResponse, @createdAt, @updatedAt, @submittedAt, @completedAt
       )
     `).run({
       id: task.id,
       parentTaskId: task.parentTaskId || null,
+      poolId: normalizePoolId(task.poolId ?? task.pool_id),
       accountId: task.accountId || null,
       runwayTaskId: task.runwayTaskId || null,
       status: task.status || 'pending',
@@ -1120,6 +1317,8 @@ export class RunwayDatabase {
     if (!current) return null;
     const previousStatus = current.status;
     const status = patch.status ?? current.status;
+    const accountId = pickPatchValue(patch, ['accountId', 'account_id'], current.accountId ?? null);
+    const runwayTaskId = pickPatchValue(patch, ['runwayTaskId', 'runway_task_id'], current.runwayTaskId ?? null);
     const completedAt = TERMINAL_STATUSES.has(status)
       ? (patch.completedAt ?? current.completedAt ?? new Date().toISOString())
       : (patch.completedAt ?? current.completedAt ?? null);
@@ -1140,8 +1339,8 @@ export class RunwayDatabase {
       WHERE id = @id
     `).run({
       id,
-      accountId: patch.accountId ?? patch.account_id ?? current.accountId ?? null,
-      runwayTaskId: patch.runwayTaskId ?? current.runwayTaskId,
+      accountId,
+      runwayTaskId,
       status,
       rawStatus: patch.rawStatus ?? current.rawStatus,
       progress: patch.progress ?? current.progress,
@@ -1161,7 +1360,7 @@ export class RunwayDatabase {
     }
     if (status !== previousStatus) {
       this.addTaskEvent(id, {
-        accountId: patch.accountId ?? patch.account_id ?? current.accountId ?? null,
+        accountId,
         type: `status:${status}`,
         message: `任务状态变更为 ${status}`,
         data: {
@@ -1172,6 +1371,83 @@ export class RunwayDatabase {
         }
       });
     }
+    return this.getTask(id);
+  }
+
+  resetTaskSubmissionState(id) {
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      UPDATE tasks SET
+        account_id = NULL,
+        runway_task_id = NULL,
+        status = 'pending',
+        raw_status = NULL,
+        error = NULL,
+        raw_response = NULL,
+        submitted_at = NULL,
+        completed_at = NULL,
+        updated_at = @now
+      WHERE id = @id
+    `).run({ id, now });
+    this.db.prepare(`
+      UPDATE assets SET
+        account_id = NULL,
+        runway_asset_id = NULL,
+        runway_url = NULL,
+        preview_url = NULL,
+        updated_at = @now
+      WHERE task_id = @id
+    `).run({ id, now });
+    this.addTaskEvent(id, {
+      type: 'submission_deferred',
+      message: '上游暂时无法接收新任务，已重新排队',
+      data: {}
+    });
+    return this.getTask(id);
+  }
+
+  requeueTaskForAutoRetry(id, { reason = null, error = null, runwayTaskId = null, rawStatus = null } = {}) {
+    const task = this.getTask(id);
+    if (!task) return null;
+    const now = new Date().toISOString();
+    const accountId = task.accountId || null;
+    this.db.prepare(`
+      UPDATE tasks SET
+        account_id = NULL,
+        runway_task_id = NULL,
+        status = 'pending',
+        raw_status = NULL,
+        progress = NULL,
+        video_url = NULL,
+        thumbnail_url = NULL,
+        error = NULL,
+        raw_response = NULL,
+        submitted_at = NULL,
+        completed_at = NULL,
+        locked_by = NULL,
+        locked_at = NULL,
+        last_heartbeat_at = NULL,
+        updated_at = @now
+      WHERE id = @id
+    `).run({ id, now });
+    this.db.prepare(`
+      UPDATE assets SET
+        account_id = NULL,
+        updated_at = @now
+      WHERE task_id = @id
+    `).run({ id, now });
+    this.addTaskEvent(id, {
+      accountId,
+      type: 'auto_retry_requeued',
+      message: '上游临时错误，已自动重新排队',
+      data: {
+        reason,
+        error,
+        runwayTaskId: runwayTaskId || task.runwayTaskId || null,
+        rawStatus: rawStatus || task.rawStatus || null,
+        attemptCount: task.attemptCount || 0
+      }
+    });
     return this.getTask(id);
   }
 
@@ -1206,39 +1482,41 @@ export class RunwayDatabase {
 
   getTask(id) {
     const row = this.db.prepare(`
-      SELECT tasks.*, accounts.name AS account_name
+      SELECT tasks.*, accounts.name AS account_name, account_pools.name AS pool_name
       FROM tasks
       LEFT JOIN accounts ON accounts.id = tasks.account_id
+      LEFT JOIN account_pools ON account_pools.id = tasks.pool_id
       WHERE tasks.id = ?
     `).get(id);
     return row ? hydrateTask(row, this.getAssetsByTask(id)) : null;
   }
 
-  listTasks({ status, limit = 50, offset = 0 } = {}) {
+  listTasks({ status, limit = 50, offset = 0, poolId = undefined } = {}) {
     const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
     const safeOffset = Math.max(Number(offset) || 0, 0);
-    const rows = status
-      ? this.db.prepare(`
-          SELECT tasks.*, accounts.name AS account_name
-          FROM tasks
-          LEFT JOIN accounts ON accounts.id = tasks.account_id
-          WHERE tasks.status = ?
-          ORDER BY tasks.created_at DESC LIMIT ? OFFSET ?
-        `).all(status, safeLimit, safeOffset)
-      : this.db.prepare(`
-          SELECT tasks.*, accounts.name AS account_name
-          FROM tasks
-          LEFT JOIN accounts ON accounts.id = tasks.account_id
-          ORDER BY tasks.created_at DESC LIMIT ? OFFSET ?
-        `).all(safeLimit, safeOffset);
+    const normalizedPoolId = normalizePoolId(poolId);
+    const filters = [];
+    const params = { status, poolId: normalizedPoolId, limit: safeLimit, offset: safeOffset };
+    if (status) filters.push('tasks.status = @status');
+    if (poolId !== undefined) filters.push(normalizedPoolId ? 'tasks.pool_id = @poolId' : 'tasks.pool_id IS NULL');
+    const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+    const rows = this.db.prepare(`
+      SELECT tasks.*, accounts.name AS account_name, account_pools.name AS pool_name
+      FROM tasks
+      LEFT JOIN accounts ON accounts.id = tasks.account_id
+      LEFT JOIN account_pools ON account_pools.id = tasks.pool_id
+      ${where}
+      ORDER BY tasks.created_at DESC LIMIT @limit OFFSET @offset
+    `).all(params);
     return rows.map((row) => hydrateTask(row, this.getAssetsByTask(row.id)));
   }
 
   getNextPendingTasks(limit) {
     const rows = this.db.prepare(`
-      SELECT tasks.*, accounts.name AS account_name
+      SELECT tasks.*, accounts.name AS account_name, account_pools.name AS pool_name
       FROM tasks
       LEFT JOIN accounts ON accounts.id = tasks.account_id
+      LEFT JOIN account_pools ON account_pools.id = tasks.pool_id
       WHERE tasks.status = 'pending'
       ORDER BY tasks.created_at ASC
       LIMIT ?
@@ -1248,9 +1526,10 @@ export class RunwayDatabase {
 
   getActiveRunwayTasks() {
     const rows = this.db.prepare(`
-      SELECT tasks.*, accounts.name AS account_name
+      SELECT tasks.*, accounts.name AS account_name, account_pools.name AS pool_name
       FROM tasks
       LEFT JOIN accounts ON accounts.id = tasks.account_id
+      LEFT JOIN account_pools ON account_pools.id = tasks.pool_id
       WHERE tasks.runway_task_id IS NOT NULL AND tasks.status IN ('queuing', 'generating', 'submitting')
       ORDER BY tasks.updated_at ASC
     `).all();
@@ -1446,9 +1725,10 @@ export class RunwayDatabase {
 
   getSyntheticTaskEvents(taskId) {
     const row = this.db.prepare(`
-      SELECT tasks.*, accounts.name AS account_name
+      SELECT tasks.*, accounts.name AS account_name, account_pools.name AS pool_name
       FROM tasks
       LEFT JOIN accounts ON accounts.id = tasks.account_id
+      LEFT JOIN account_pools ON account_pools.id = tasks.pool_id
       WHERE tasks.id = ?
     `).get(taskId);
     if (!row) return [];
@@ -1725,6 +2005,20 @@ function normalizeProxyStrategy(value) {
   return ['fixed', 'per_request', 'on_failure'].includes(strategy) ? strategy : 'fixed';
 }
 
+function normalizePoolId(value) {
+  if (value == null || value === '' || value === 'default' || value === 'none') return null;
+  return String(value).trim() || null;
+}
+
+function normalizeApiKey(value) {
+  const text = String(value || '').trim();
+  return text || null;
+}
+
+function generatePoolApiKey() {
+  return `pool_${randomBytes(24).toString('base64url')}`;
+}
+
 function toDbBool(value) {
   if (typeof value === 'boolean') return value ? 1 : 0;
   if (typeof value === 'number') return value ? 1 : 0;
@@ -1783,6 +2077,7 @@ function hydrateAccount(row, { includeSecret = false } = {}) {
   const generationUsed = normalizeNonNegativeInt(row.generation_used, 0);
   return {
     id: row.id,
+    poolId: row.pool_id,
     name: row.name,
     remark: row.remark,
     jwt: includeSecret ? row.jwt : undefined,
@@ -1803,6 +2098,8 @@ function hydrateAccount(row, { includeSecret = false } = {}) {
     generationUsed,
     generationRemaining: Math.max(generationLimit - generationUsed, 0),
     generationResetAt: row.generation_reset_at,
+    todayCompletedCount: normalizeNonNegativeInt(row.today_completed_count, 0),
+    todayAvgGenerationMs: row.today_avg_generation_ms == null ? null : Math.max(Math.round(Number(row.today_avg_generation_ms) || 0), 0),
     requestTimeoutMs: row.request_timeout_ms,
     uploadTimeoutMs: row.upload_timeout_ms,
     taskTimeoutMs: row.task_timeout_ms,
@@ -1814,12 +2111,37 @@ function hydrateAccount(row, { includeSecret = false } = {}) {
     consecutiveErrorCount: row.consecutive_error_count,
     lastError: row.last_error,
     lastAuthFailedAt: row.last_auth_failed_at,
+    submitCooldownUntil: row.submit_cooldown_until,
     lastUsedAt: row.last_used_at,
     capturedAt: row.captured_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     ready: Boolean(row.is_active && (row.jwt || row.cookie_header) && row.team_id && generationUsed < generationLimit)
   };
+}
+
+function hydrateAccountPool(row, { includeSecret = false } = {}) {
+  return {
+    id: row.id,
+    name: row.name,
+    apiKey: includeSecret ? row.api_key : undefined,
+    keyPreview: previewSecret(row.api_key),
+    remark: row.remark,
+    isActive: Boolean(row.is_active),
+    accountCount: row.account_count || 0,
+    activeAccountCount: row.active_account_count || 0,
+    pendingTaskCount: row.pending_task_count || 0,
+    activeTaskCount: row.active_task_count || 0,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function previewSecret(value) {
+  const text = String(value || '');
+  if (!text) return null;
+  if (text.length <= 10) return '***';
+  return `${text.slice(0, 6)}...${text.slice(-4)}`;
 }
 
 function hydrateProxy(row) {
@@ -1942,6 +2264,8 @@ function hydrateTask(row, assets = []) {
   return {
     id: row.id,
     parentTaskId: row.parent_task_id,
+    poolId: row.pool_id,
+    poolName: row.pool_name || null,
     accountId: row.account_id,
     accountName: row.account_name || null,
     runwayTaskId: row.runway_task_id,

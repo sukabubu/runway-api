@@ -9,10 +9,11 @@ const RETRY_BACKOFF_MS = [1000, 3000, 7000];
 const RETRYABLE_STATUS = new Set([0, 408, 429, 500, 502, 503, 504]);
 
 export class RunwayClient {
-  constructor({ db, proxyManager = null, fetchImpl = fetch }) {
+  constructor({ db, proxyManager = null, fetchImpl = fetch, nodeFetchWithAgentImpl = nodeFetchWithAgent }) {
     this.db = db;
     this.proxyManager = proxyManager;
     this.fetch = fetchImpl;
+    this.nodeFetchWithAgent = nodeFetchWithAgentImpl;
   }
 
   async call(method, endpoint, body = null, opts = {}) {
@@ -44,6 +45,7 @@ export class RunwayClient {
     const operation = opts.operation || `runway:${endpoint.split('?')[0]}`;
     const runtime = this.db.getRuntimeConfig?.() || defaultRuntimeConfig();
     const effective = effectiveRuntime(runtime, account);
+    if (opts.maxRetries != null) effective.maxRetries = Number(opts.maxRetries) || 0;
     const requestBody = body != null && method !== 'GET' ? JSON.stringify(body) : undefined;
     const retryBackoff = effective.retryBackoffMs.length ? effective.retryBackoffMs : RETRY_BACKOFF_MS;
     let lastErr = null;
@@ -132,7 +134,7 @@ export class RunwayClient {
 
   async fetchWithRuntime(url, { method, headers, body, timeoutMs, proxy }) {
     const agent = proxy ? this.proxyManager.createAgent(proxy) : null;
-    if (agent) return nodeFetchWithAgent(url, { method, headers, body, agent, timeoutMs });
+    if (agent) return this.nodeFetchWithAgent(url, { method, headers, body, agent, timeoutMs });
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -268,13 +270,13 @@ export class RunwayClient {
       }
       const runtime = this.db.getRuntimeConfig?.() || defaultRuntimeConfig();
       const effective = effectiveRuntime(runtime, account);
-      const proxy = this.resolveProxy(opts.account || account, { preferRotate: (opts.account || account)?.proxyStrategy === 'per_request' });
       const { etag } = await putToPresignedUrl(this.fetch, slot.uploadUrls[0], file, slot.uploadHeaders || {}, {
         timeoutMs: computeUploadTimeoutMs(file.size, effective),
         retryBackoffMs: effective.retryBackoffMs,
         maxRetries: effective.maxRetries,
-        proxy,
+        proxyProvider: (preferRotate = false) => this.resolveProxy(opts.account || account, { preferRotate }),
         proxyManager: this.proxyManager,
+        nodeFetchWithAgent: this.nodeFetchWithAgent,
         db: this.db,
         accountId: (opts.account || account)?.id,
         operation: 's3:put'
@@ -370,6 +372,41 @@ export class RunwayClient {
       status: mapRunwayStatus(node?.status || 'PENDING'),
       rawResponse: resp
     };
+  }
+
+  async canStartTask(task, opts = {}) {
+    const model = findRunwayModel(task.model);
+    const account = opts.account || (opts.accountId ? this.db.getAccount(opts.accountId, { includeSecret: true }) : null);
+    const creds = account ? accountToCredentials(account) : this.db.getCredentials();
+    const body = {
+      feature: model.canStartFeature || model.estimateFeature || model.taskType,
+      taskType: model.taskType
+    };
+    if (creds?.team_id && Number(creds.team_id) > 0) body.asTeamId = Number(creds.team_id);
+    try {
+      const resp = await this.call('POST', RUNWAY_ENDPOINTS.canStart, body, {
+        ...opts,
+        account,
+        operation: 'runway:can_start',
+        maxRetries: 0
+      });
+      return parseCanStartResponse(resp);
+    } catch (err) {
+      if (err.code === 'AUTH_FAILED') throw err;
+      if (isCanStartUnavailable(err)) {
+        this.db.logRequest?.({
+          accountId: account?.id,
+          operation: 'runway:can_start',
+          status: 'skipped',
+          statusCode: err.status || err.statusCode || null,
+          message: `can_start unavailable: ${err.message}`,
+          responseBody: err.body || null
+        });
+        return { ok: true, reason: 'can_start_unavailable', rawResponse: err.body || null, skipped: true };
+      }
+      if (isTooManyRunwayTasksError(err)) return { ok: false, reason: 'too_many_tasks', rawResponse: err.body || null };
+      throw err;
+    }
   }
 
   async pollTask(runwayTaskId, opts = {}) {
@@ -492,6 +529,43 @@ export function parseRunwayTaskResponse(resp) {
   };
 }
 
+export function isTooManyRunwayTasksError(err) {
+  const body = err?.body;
+  const message = [
+    err?.message,
+    typeof body === 'string' ? body : null,
+    body?.error,
+    body?.message
+  ].filter(Boolean).join(' ');
+  return Number(err?.status || err?.statusCode) === 429 && /too many tasks are running or pending/i.test(message);
+}
+
+function parseCanStartResponse(resp) {
+  if (resp == null) return { ok: true, reason: null, rawResponse: resp };
+  const value = resp.canStart ?? resp.can_start ?? resp.ok ?? resp.allowed ?? resp.available;
+  if (typeof value === 'boolean') {
+    return {
+      ok: value,
+      reason: value ? null : extractCanStartReason(resp),
+      rawResponse: resp
+    };
+  }
+  const reason = extractCanStartReason(resp);
+  if (/too many tasks are running or pending/i.test(reason || '')) {
+    return { ok: false, reason, rawResponse: resp };
+  }
+  return { ok: true, reason: 'unknown_can_start_response', rawResponse: resp };
+}
+
+function extractCanStartReason(resp) {
+  return resp?.reason || resp?.message || resp?.error || resp?.statusReason || resp?.failureReason || null;
+}
+
+function isCanStartUnavailable(err) {
+  const status = Number(err?.status || err?.statusCode);
+  return [404, 405, 501].includes(status);
+}
+
 function extractTaskError(node) {
   if (!(node.error || node.failure || node.failureReason || node.errorReason || node.failureCode || node.errorCode || node.errorMessage || node.statusReason || node.moderation)) {
     return null;
@@ -519,24 +593,27 @@ async function putToPresignedUrl(fetchImpl, signedUrl, blob, extraHeaders = {}, 
   const timeoutMs = opts.timeoutMs || computeUploadTimeoutMs(blob.size);
   const backoff = opts.retryBackoffMs?.length ? opts.retryBackoffMs : RETRY_BACKOFF_MS;
   const maxRetries = opts.maxRetries ?? backoff.length;
+  const headers = withContentLength(extraHeaders, blob.size);
   let lastErr = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const proxy = attempt > 0 ? resolveUploadRetryProxy(opts, attempt > 1) : null;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const startedAt = Date.now();
     try {
-      const agent = opts.proxy && opts.proxyManager ? opts.proxyManager.createAgent(opts.proxy) : null;
+      const agent = proxy && opts.proxyManager ? opts.proxyManager.createAgent(proxy) : null;
+      const agentFetch = opts.nodeFetchWithAgent || nodeFetchWithAgent;
       const response = agent
-        ? await nodeFetchWithAgent(signedUrl, {
+        ? await agentFetch(signedUrl, {
             method: 'PUT',
-            headers: { ...extraHeaders },
+            headers,
             body: blob,
             agent,
             timeoutMs
           })
         : await fetchImpl(signedUrl, {
             method: 'PUT',
-            headers: { ...extraHeaders },
+            headers,
             body: blob,
             signal: controller.signal,
             duplex: 'half'
@@ -551,7 +628,7 @@ async function putToPresignedUrl(fetchImpl, signedUrl, blob, extraHeaders = {}, 
       }
       opts.db?.logRequest?.({
         accountId: opts.accountId,
-        proxyId: opts.proxy?.id,
+        proxyId: proxy?.id,
         operation: opts.operation || 's3:put',
         status: 'success',
         statusCode: response.status,
@@ -565,7 +642,7 @@ async function putToPresignedUrl(fetchImpl, signedUrl, blob, extraHeaders = {}, 
       const retryable = isRetryableError(err, err?.status);
       opts.db?.logRequest?.({
         accountId: opts.accountId,
-        proxyId: opts.proxy?.id,
+        proxyId: proxy?.id,
         operation: opts.operation || 's3:put',
         status: 'failed',
         statusCode: err.status || null,
@@ -573,7 +650,7 @@ async function putToPresignedUrl(fetchImpl, signedUrl, blob, extraHeaders = {}, 
         message: err.message,
         responseBody: err.body || null
       });
-      if (opts.proxy?.id) opts.db?.recordProxyError?.(opts.proxy.id, err.message);
+      if (proxy?.id) opts.db?.recordProxyError?.(proxy.id, err.message);
       const isLast = attempt === maxRetries;
       if (!retryable || isLast) throw err;
       await delay(backoff[Math.min(attempt, backoff.length - 1)] || 1000);
@@ -582,6 +659,18 @@ async function putToPresignedUrl(fetchImpl, signedUrl, blob, extraHeaders = {}, 
     }
   }
   throw lastErr;
+}
+
+function resolveUploadRetryProxy(opts, preferRotate = false) {
+  if (opts.proxyProvider) return opts.proxyProvider(preferRotate) || null;
+  return opts.proxy || null;
+}
+
+function withContentLength(headers = {}, size = null) {
+  const next = { ...headers };
+  const hasLength = Object.keys(next).some((key) => key.toLowerCase() === 'content-length');
+  if (!hasLength && Number.isFinite(Number(size))) next['Content-Length'] = String(size);
+  return next;
 }
 
 function isRetryableError(err, status) {

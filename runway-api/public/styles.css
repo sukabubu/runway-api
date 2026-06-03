@@ -156,7 +156,7 @@ small,
 
 .stats {
   display: grid;
-  grid-template-columns: repeat(7, minmax(118px, 1fr));
+  grid-template-columns: repeat(8, minmax(112px, 1fr));
   gap: 12px;
   margin-bottom: 14px;
 }
@@ -352,7 +352,12 @@ form {
 
 .accounts-head,
 .accounts-row {
-  grid-template-columns: minmax(170px, 1.2fr) 78px 72px minmax(110px, 0.8fr) minmax(150px, 1fr) minmax(130px, 0.9fr) minmax(160px, 1fr) 210px;
+  grid-template-columns: minmax(150px, 1.1fr) 86px 68px 64px minmax(105px, 0.8fr) 96px minmax(120px, 0.9fr) minmax(150px, 1fr) 190px;
+}
+
+.pools-head,
+.pools-row {
+  grid-template-columns: minmax(180px, 1.2fr) 78px minmax(150px, 1fr) 84px 150px minmax(220px, auto);
 }
 
 .tasks-head,
@@ -537,6 +542,7 @@ dialog::backdrop {
   }
 
   .accounts-row,
+  .pools-row,
   .tasks-row,
   .logs-row,
   .proxies-row {

@@ -35,12 +35,14 @@
         <article><span>凭证完整</span><strong id="statReady">-</strong></article>
         <article><span>运行中</span><strong id="statInflight">-</strong></article>
         <article><span>排队任务</span><strong id="statPending">-</strong></article>
+        <article><span>今日成功视频</span><strong id="statTodayCompleted">-</strong></article>
         <article><span>本地剩余生成数</span><strong id="statQuota">-</strong></article>
         <article><span>启用代理</span><strong id="statProxies">-</strong></article>
       </section>
 
       <nav class="tabs" aria-label="后台导航">
         <button class="active" type="button" data-tab="accounts">账号管理</button>
+        <button type="button" data-tab="pools">账号池</button>
         <button type="button" data-tab="tasks">任务队列</button>
         <button type="button" data-tab="proxies">代理池</button>
         <button type="button" data-tab="settings">系统配置</button>
@@ -58,6 +60,17 @@
           </div>
         </div>
         <div id="accounts" class="table"></div>
+      </section>
+
+      <section id="tab-pools" class="tab-panel">
+        <div class="panel-head">
+          <h2>账号池</h2>
+          <div class="toolbar">
+            <button id="showPoolDialog" type="button">新增池子</button>
+            <button id="refreshPools" type="button">刷新</button>
+          </div>
+        </div>
+        <div id="pools" class="table"></div>
       </section>
 
       <section id="tab-tasks" class="tab-panel">
@@ -191,6 +204,7 @@
           <label>账号名称<input name="name" required value="手动账号"></label>
           <label>并发上限<input name="maxConcurrent" type="number" min="1" value="2"></label>
           <label>每日生成上限<input name="generationLimit" type="number" min="1" value="80"></label>
+          <label>账号池<select name="poolId" id="manualPoolSelect"><option value="">默认池</option></select></label>
           <label>代理策略
             <select name="proxyStrategy">
               <option value="fixed">固定代理</option>
@@ -246,6 +260,7 @@
           <label>备注<input name="remark"></label>
           <label>并发上限<input name="maxConcurrent" type="number" min="1"></label>
           <label>每日生成上限<input name="generationLimit" type="number" min="1"></label>
+          <label>账号池<select name="poolId" id="accountPoolSelect"><option value="">默认池</option></select></label>
           <label>绑定代理<select name="proxyId" id="accountProxySelect"><option value="">不绑定/自动</option></select></label>
           <label>代理策略
             <select name="proxyStrategy">
@@ -275,6 +290,23 @@
           <button type="button" data-account-reset-quota>重置生成数</button>
           <button type="button" data-account-delete>删除账号</button>
         </div>
+      </form>
+    </dialog>
+
+    <dialog id="poolDialog">
+      <form id="poolForm" method="dialog" class="dialog-form">
+        <div class="panel-head">
+          <h2>账号池配置</h2>
+          <button type="button" data-close-dialog>关闭</button>
+        </div>
+        <input name="id" type="hidden">
+        <div class="form-grid two">
+          <label>池子名称<input name="name" required placeholder="业务 A"></label>
+          <label class="inline"><input name="isActive" type="checkbox" checked> 启用池子</label>
+        </div>
+        <label>独立 API Key<input name="apiKey" autocomplete="off" placeholder="留空自动生成"></label>
+        <label>备注<input name="remark"></label>
+        <button class="primary" type="submit">保存池子</button>
       </form>
     </dialog>
 

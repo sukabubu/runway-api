@@ -71,6 +71,71 @@ describe('RunwayDatabase', () => {
     db.close();
   });
 
+  it('skips accounts in submit cooldown until the cooldown expires', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-test-'));
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'));
+    const cooled = db.createAccount({
+      name: 'cooled',
+      jwt: 'jwt-a',
+      teamId: 1
+    });
+    const available = db.createAccount({
+      name: 'available',
+      jwt: 'jwt-b',
+      teamId: 2
+    });
+
+    db.setAccountSubmitCooldown(cooled.id, new Date(Date.now() + 60_000).toISOString(), 'Runway queue is full');
+    expect(db.getAccount(cooled.id).submitCooldownUntil).toBeTruthy();
+    expect(db.selectLeastLoadedAccount().id).toBe(available.id);
+    expect(db.acquireAccountForTask('missing-task', { preferredAccountId: cooled.id })).toBeNull();
+
+    db.setAccountSubmitCooldown(cooled.id, new Date(Date.now() - 1000).toISOString());
+    expect([cooled.id, available.id]).toContain(db.selectLeastLoadedAccount().id);
+    db.markAccountSuccess(cooled.id);
+    expect(db.getAccount(cooled.id).submitCooldownUntil).toBeNull();
+    db.close();
+  });
+
+  it('isolates account acquisition by account pool', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-test-'));
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'));
+    const poolA = db.createAccountPool({ name: 'pool A', apiKey: 'pool-a-key' });
+    const poolB = db.createAccountPool({ name: 'pool B', apiKey: 'pool-b-key' });
+    const accountA = db.createAccount({ name: 'a', jwt: 'jwt-a', teamId: 1, poolId: poolA.id });
+    const accountB = db.createAccount({ name: 'b', jwt: 'jwt-b', teamId: 2, poolId: poolB.id });
+    const defaultAccount = db.createAccount({ name: 'default', jwt: 'jwt-default', teamId: 3 });
+    const taskA = db.createTask({
+      id: 'task-a',
+      poolId: poolA.id,
+      prompt: 'a',
+      model: 'gen4',
+      duration: 5,
+      resolution: '720p',
+      aspectRatio: '16:9',
+      generateAudio: false,
+      exploreMode: false
+    });
+    const taskDefault = db.createTask({
+      id: 'task-default-pool',
+      prompt: 'default',
+      model: 'gen4',
+      duration: 5,
+      resolution: '720p',
+      aspectRatio: '16:9',
+      generateAudio: false,
+      exploreMode: false
+    });
+
+    expect(db.getAccountPoolByApiKey('pool-a-key').id).toBe(poolA.id);
+    expect(db.acquireAccountForTask(taskA.id, { poolId: poolA.id }).id).toBe(accountA.id);
+    expect(db.acquireAccountForTask(taskA.id, { preferredAccountId: accountB.id, poolId: poolA.id })).toBeNull();
+    expect(db.acquireAccountForTask(taskDefault.id, { poolId: null }).id).toBe(defaultAccount.id);
+    expect(db.listTasks({ poolId: poolA.id }).map((task) => task.id)).toEqual(['task-a']);
+    expect(db.listTasks({ poolId: poolB.id })).toEqual([]);
+    db.close();
+  });
+
   it('treats assetGroupId as optional for ready accounts', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-test-'));
     const db = new RunwayDatabase(path.join(dir, 'test.sqlite'));
@@ -187,6 +252,65 @@ describe('RunwayDatabase', () => {
     db.close();
   });
 
+  it('counts only successfully completed videos from the current Shanghai day', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-test-'));
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'));
+    const account = db.createAccount({
+      name: 'stats',
+      jwt: 'jwt-a',
+      teamId: 1
+    });
+    const today = new Date().toISOString();
+    const submitted = new Date(Date.now() - 120_000).toISOString();
+    const yesterday = new Date(Date.now() - 36 * 60 * 60 * 1000).toISOString();
+    db.createTask({
+      id: 'today-completed',
+      accountId: account.id,
+      status: 'completed',
+      prompt: 'today',
+      model: 'gen4',
+      duration: 5,
+      resolution: '720p',
+      aspectRatio: '16:9',
+      generateAudio: false,
+      exploreMode: false,
+      submittedAt: submitted,
+      completedAt: today
+    });
+    db.createTask({
+      id: 'today-failed',
+      accountId: account.id,
+      status: 'failed',
+      prompt: 'failed',
+      model: 'gen4',
+      duration: 5,
+      resolution: '720p',
+      aspectRatio: '16:9',
+      generateAudio: false,
+      exploreMode: false,
+      completedAt: today
+    });
+    db.createTask({
+      id: 'old-completed',
+      accountId: account.id,
+      status: 'completed',
+      prompt: 'old',
+      model: 'gen4',
+      duration: 5,
+      resolution: '720p',
+      aspectRatio: '16:9',
+      generateAudio: false,
+      exploreMode: false,
+      completedAt: yesterday
+    });
+
+    expect(db.getAccountSummary().todayCompletedTasks).toBe(1);
+    expect(db.getAccount(account.id).todayCompletedCount).toBe(1);
+    expect(db.getAccount(account.id).todayAvgGenerationMs).toBeGreaterThanOrEqual(119_000);
+    expect(db.getAccount(account.id).todayAvgGenerationMs).toBeLessThanOrEqual(121_000);
+    db.close();
+  });
+
   it('automatically resets generation usage on a new Shanghai calendar day', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-test-'));
     const db = new RunwayDatabase(path.join(dir, 'test.sqlite'));
@@ -208,6 +332,27 @@ describe('RunwayDatabase', () => {
     expect(reset.generationUsed).toBe(0);
     expect(reset.generationResetAt).toBe(tomorrow.toISOString());
     expect(db.selectLeastLoadedAccount().id).toBe(account.id);
+    db.close();
+  });
+
+  it('preserves account credentials when auth failures disable the account', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-test-'));
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'));
+    const account = db.createAccount({
+      name: 'auth',
+      jwt: 'jwt-a',
+      cookieHeader: 'session=abc',
+      teamId: 1
+    });
+
+    db.markAccountAuthFailed(account.id, 'Runway returned 401');
+
+    expect(db.getAccount(account.id, { includeSecret: true })).toMatchObject({
+      isActive: false,
+      jwt: 'jwt-a',
+      cookieHeader: 'session=abc',
+      lastError: 'Runway returned 401'
+    });
     db.close();
   });
 
@@ -395,6 +540,74 @@ describe('RunwayDatabase', () => {
       errorCode: 'TASK_TIMEOUT'
     });
     expect(db.getAccount(account.id).inflight).toBe(0);
+    db.close();
+  });
+
+  it('requeues retryable upstream failures without clearing uploaded assets', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-test-'));
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'));
+    const account = db.createAccount({
+      name: 'a',
+      jwt: 'jwt-a',
+      teamId: 1,
+      assetGroupId: 'asset-a',
+      inflight: 1
+    });
+    db.createTask({
+      id: 'retryable-task',
+      accountId: account.id,
+      runwayTaskId: 'runway-failed',
+      status: 'queuing',
+      rawStatus: 'FAILED',
+      prompt: 'hello',
+      model: 'seedance_2',
+      duration: 5,
+      resolution: '480p',
+      aspectRatio: '16:9',
+      generateAudio: true,
+      exploreMode: true,
+      submittedAt: new Date().toISOString()
+    });
+    db.addAsset({
+      id: 'asset-1',
+      taskId: 'retryable-task',
+      accountId: account.id,
+      localPath: path.join(dir, 'asset.png'),
+      filename: 'asset.png',
+      mimeType: 'image/png',
+      mediaType: 'image',
+      size: 123,
+      runwayAssetId: 'runway-asset',
+      runwayUrl: 'https://example.test/asset.png',
+      previewUrl: 'https://example.test/preview.png'
+    });
+
+    db.releaseAccount(account.id);
+    const requeued = db.requeueTaskForAutoRetry('retryable-task', {
+      reason: 'Moderation service temporarily unavailable',
+      error: { raw: { error: { reason: 'INTERNAL' } } },
+      runwayTaskId: 'runway-failed',
+      rawStatus: 'FAILED'
+    });
+
+    expect(requeued).toMatchObject({
+      status: 'pending',
+      accountId: null,
+      runwayTaskId: null,
+      rawStatus: null,
+      error: null,
+      rawResponse: null,
+      submittedAt: null,
+      completedAt: null
+    });
+    expect(requeued.assets[0]).toMatchObject({
+      accountId: null,
+      runwayAssetId: 'runway-asset',
+      runwayUrl: 'https://example.test/asset.png',
+      previewUrl: 'https://example.test/preview.png'
+    });
+    expect(db.getAccount(account.id).inflight).toBe(0);
+    expect(db.getTaskEvents('retryable-task').map((event) => event.type)).toContain('auto_retry_requeued');
     db.close();
   });
 

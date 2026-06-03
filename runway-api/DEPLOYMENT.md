@@ -49,6 +49,7 @@ DATA_DIR=./data
 | `BROWSER_PROFILES_DIR` | `./data/browser-profiles` | Playwright 账号 profile |
 | `RUNWAY_ACCOUNT_CONCURRENCY` | `2` | 新账号默认并发 |
 | `RUNWAY_TASK_TIMEOUT_MS` | `1500000` | 任务最大运行时间 |
+| `RUNWAY_UPSTREAM_AUTO_RETRY_ATTEMPTS` | `3` | 上游临时失败自动重试最大尝试次数 |
 | `LOG_RETENTION_DAYS` | `14` | 请求日志保留天数 |
 | `UPLOAD_RETENTION_DAYS` | `7` | 完成/失败任务素材保留天数 |
 

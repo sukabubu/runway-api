@@ -176,6 +176,81 @@ describe('app frontend and auth', () => {
 });
 
 describe('account admin API', () => {
+  it('creates isolated account pools with independent API keys', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-pool-test-'));
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'), { adminUsername: 'admin', adminPassword: 'admin', internalApiKey: 'secret' });
+    const poolA = db.createAccountPool({ name: 'pool A', apiKey: 'pool-a-key' });
+    const poolB = db.createAccountPool({ name: 'pool B', apiKey: 'pool-b-key' });
+    db.createAccount({ name: 'a', jwt: 'jwt-a', teamId: 1, poolId: poolA.id });
+    db.createAccount({ name: 'b', jwt: 'jwt-b', teamId: 2, poolId: poolB.id });
+    const app = await buildApp({
+      config: { internalApiKey: 'secret', uploadDir: path.join(dir, 'uploads') },
+      db,
+      browser: {
+        status: () => ({ started: false, pages: 0, headless: true }),
+        close: async () => {}
+      },
+      worker: {
+        start: () => {},
+        stop: async () => {}
+      },
+      logger: false
+    });
+
+    const poolsWithPoolKey = await app.inject({
+      method: 'GET',
+      url: '/api/account-pools',
+      headers: { authorization: 'Bearer pool-a-key' }
+    });
+    expect(poolsWithPoolKey.statusCode).toBe(401);
+
+    const pools = await app.inject({
+      method: 'GET',
+      url: '/api/account-pools',
+      headers: { authorization: 'Bearer secret' }
+    });
+    expect(pools.statusCode).toBe(200);
+    expect(JSON.parse(pools.body).pools).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: poolA.id, apiKey: 'pool-a-key' })
+    ]));
+
+    const createdA = await app.inject({
+      method: 'POST',
+      url: '/v1/videos',
+      headers: { authorization: 'Bearer pool-a-key' },
+      payload: { prompt: 'pool a task', model: 'gen4' }
+    });
+    expect(createdA.statusCode).toBe(202);
+    const taskA = JSON.parse(createdA.body);
+    expect(db.getTask(taskA.id).poolId).toBe(poolA.id);
+
+    const createdB = await app.inject({
+      method: 'POST',
+      url: '/v1/videos',
+      headers: { authorization: 'Bearer pool-b-key' },
+      payload: { prompt: 'pool b task', model: 'gen4' }
+    });
+    expect(createdB.statusCode).toBe(202);
+    const taskB = JSON.parse(createdB.body);
+    expect(db.getTask(taskB.id).poolId).toBe(poolB.id);
+
+    const listA = await app.inject({
+      method: 'GET',
+      url: '/v1/videos',
+      headers: { authorization: 'Bearer pool-a-key' }
+    });
+    expect(JSON.parse(listA.body).data.map((task) => task.id)).toEqual([taskA.id]);
+
+    const hiddenFromA = await app.inject({
+      method: 'GET',
+      url: `/v1/videos/${taskB.id}`,
+      headers: { authorization: 'Bearer pool-a-key' }
+    });
+    expect(hiddenFromA.statusCode).toBe(404);
+
+    await app.close();
+  });
+
   it('returns account secrets for detail editing and caches Runway credits', async () => {
     const account = {
       id: 'account-1',
