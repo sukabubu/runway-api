@@ -23,4 +23,20 @@ describe('ProxyManager', () => {
     expect(manager.resolveForAccount(account, { preferRotate: true }).proxy.id).toBe(second.id);
     db.close();
   });
+
+  it('disables failed proxy and falls back to direct when no replacement exists', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-test-'));
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'));
+    const proxy = db.createProxy({ name: 'p1', url: 'one.test:8000' });
+    const account = db.createAccount({ name: 'a', proxyId: proxy.id, proxyStrategy: 'fixed' });
+    const manager = new ProxyManager({ db });
+
+    const next = manager.handleProxyFailure(account, proxy, 'connect ETIMEDOUT one.test:8000');
+
+    expect(next).toBeNull();
+    expect(db.getProxy(proxy.id).isActive).toBe(false);
+    expect(db.getAccount(account.id).proxyId).toBeNull();
+    expect(manager.resolveForAccount(db.getAccount(account.id)).proxy).toBeNull();
+    db.close();
+  });
 });

@@ -105,7 +105,7 @@ export class RunwayClient {
         return parsed;
       } catch (err) {
         lastErr = err;
-        if (proxy?.id) this.db.recordProxyError?.(proxy.id, err.message);
+        if (proxy?.id && isProxyTransportError(err)) this.handleProxyTransportFailure(account, proxy, err);
         if (err.code === 'AUTH_FAILED' || err.status === 401 || err.status === 403) throw err;
         this.db.logRequest?.({
           accountId: account?.id,
@@ -119,7 +119,6 @@ export class RunwayClient {
           responseBody: err.body || null
         });
         if (!isRetryableError(err, err.status || err.statusCode) || attempt >= effective.maxRetries) throw err;
-        if (account?.proxyStrategy === 'on_failure' && this.proxyManager) this.proxyManager.rotateForAccount(account, proxy?.id);
         await delay(retryBackoff[Math.min(attempt, retryBackoff.length - 1)] || 1000);
       }
     }
@@ -150,6 +149,15 @@ export class RunwayClient {
     } else {
       this.db.invalidateCredentials();
     }
+  }
+
+  handleProxyTransportFailure(account, proxy, err) {
+    if (!this.proxyManager?.handleProxyFailure) {
+      this.db.recordProxyError?.(proxy.id, err.message);
+      return;
+    }
+    const next = this.proxyManager.handleProxyFailure(account, proxy, err.message);
+    if (account) account.proxyId = next?.id || null;
   }
 
   async refreshAccountJwt(account) {
@@ -278,6 +286,7 @@ export class RunwayClient {
         proxyManager: this.proxyManager,
         nodeFetchWithAgent: this.nodeFetchWithAgent,
         db: this.db,
+        account: opts.account || account,
         accountId: (opts.account || account)?.id,
         operation: 's3:put'
       });
@@ -708,7 +717,7 @@ async function putToPresignedUrl(fetchImpl, signedUrl, blob, extraHeaders = {}, 
         message: err.message,
         responseBody: err.body || null
       });
-      if (proxy?.id) opts.db?.recordProxyError?.(proxy.id, err.message);
+      if (proxy?.id && isProxyTransportError(err)) handleUploadProxyFailure(opts, proxy, err);
       const isLast = attempt === maxRetries;
       if (!retryable || isLast) throw err;
       await delay(backoff[Math.min(attempt, backoff.length - 1)] || 1000);
@@ -722,6 +731,14 @@ async function putToPresignedUrl(fetchImpl, signedUrl, blob, extraHeaders = {}, 
 function resolveUploadRetryProxy(opts, preferRotate = false) {
   if (opts.proxyProvider) return opts.proxyProvider(preferRotate) || null;
   return opts.proxy || null;
+}
+
+function handleUploadProxyFailure(opts, proxy, err) {
+  if (opts.proxyManager?.handleProxyFailure) {
+    opts.proxyManager.handleProxyFailure(opts.account || null, proxy, err.message);
+  } else {
+    opts.db?.recordProxyError?.(proxy.id, err.message);
+  }
 }
 
 function withContentLength(headers = {}, size = null) {
@@ -738,6 +755,11 @@ function isRetryableError(err, status) {
     return status === 400 && /RequestTimeout/i.test(err?.body || '');
   }
   return true;
+}
+
+function isProxyTransportError(err) {
+  if (!err || err.status || err.statusCode) return false;
+  return /AbortError|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|socket hang up|network|fetch failed|timeout/i.test(err.message || '');
 }
 
 function computeUploadTimeoutMs(byteSize, runtime = {}) {

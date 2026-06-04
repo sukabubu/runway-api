@@ -20,8 +20,15 @@ export class ProxyManager {
 
   rotateForAccount(account, failedProxyId = null) {
     const next = this.pickNextProxy(failedProxyId);
-    if (next && account?.id) this.db.updateAccount(account.id, { proxyId: next.id });
+    if (account?.id) this.db.updateAccount(account.id, { proxyId: next?.id || null });
     return next;
+  }
+
+  handleProxyFailure(account, proxy, message = 'proxy failed') {
+    if (!proxy?.id) return null;
+    this.db.recordProxyError?.(proxy.id, message);
+    this.db.setProxyActive?.(proxy.id, false);
+    return this.rotateForAccount(account, proxy.id);
   }
 
   pickNextProxy(skipId = null) {
