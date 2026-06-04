@@ -362,7 +362,7 @@ form {
 
 .tasks-head,
 .tasks-row {
-  grid-template-columns: minmax(190px, 1.2fr) minmax(110px, 0.7fr) 96px 72px minmax(180px, 1fr) 150px;
+  grid-template-columns: minmax(190px, 1.2fr) 58px minmax(110px, 0.7fr) 96px 72px minmax(180px, 1fr) 150px;
 }
 
 .logs-head,

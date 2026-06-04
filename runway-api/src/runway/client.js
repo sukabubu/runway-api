@@ -343,7 +343,13 @@ export class RunwayClient {
       err.statusCode = 400;
       throw err;
     }
+    if ((model.kind || 'video') === 'image') {
+      return this.submitImageTask(task, { model, referenceImages, referenceVideos }, opts);
+    }
+    return this.submitVideoTask(task, { model, referenceImages, referenceVideos }, opts);
+  }
 
+  async submitVideoTask(task, { model, referenceImages, referenceVideos }, opts = {}) {
     const taskId = randomUUID();
     const options = {
       name: `${model.label} - ${task.prompt.slice(0, 30)}`,
@@ -358,10 +364,43 @@ export class RunwayClient {
     };
     if (referenceImages.length) options.referenceImages = referenceImages;
     if (referenceVideos.length) options.referenceVideos = referenceVideos;
+    return this.submitRunwayTask({ taskType: model.taskType, options }, taskId, opts);
+  }
+
+  async submitImageTask(task, { model, referenceImages, referenceVideos }, opts = {}) {
+    if (referenceVideos.length) {
+      const err = new Error(`${model.label} does not support reference videos`);
+      err.statusCode = 400;
+      throw err;
+    }
+    const taskId = randomUUID();
+    const options = {
+      name: `${model.label} - ${task.prompt.slice(0, 30)}`,
+      prompt: task.prompt,
+      size: runwayImageSize(task.resolution || model.defaultResolution || '1K'),
+      aspectRatio: task.aspectRatio || model.defaultAspectRatio || '1:1',
+      quality: task.quality || model.defaultQuality || 'high',
+      numImages: task.numImages || model.defaultNumImages || 1,
+      exploreMode: task.exploreMode !== false && model.supportsExploreMode,
+      creationSource: 'tool-mode'
+    };
+    if (referenceImages.length) {
+      options.referenceImages = referenceImages.map((reference) => ({
+        url: reference.url,
+        ...(reference.assetId ? { assetId: reference.assetId } : {}),
+        ...(reference.width ? { width: reference.width } : {}),
+        ...(reference.height ? { height: reference.height } : {}),
+        tag: 'reference'
+      }));
+    }
+    return this.submitRunwayTask({ taskType: model.taskType, options }, taskId, opts);
+  }
+
+  async submitRunwayTask(payload, taskId, opts = {}) {
     const account = opts.account || (opts.accountId ? this.db.getAccount(opts.accountId, { includeSecret: true }) : null);
     const creds = account ? accountToCredentials(account) : this.db.getCredentials();
-    if (creds?.asset_group_id) options.assetGroupId = creds.asset_group_id;
-    const body = { taskType: model.taskType, options };
+    if (creds?.asset_group_id) payload.options.assetGroupId = creds.asset_group_id;
+    const body = { ...payload };
     if (creds?.team_id && Number(creds.team_id) > 0) body.asTeamId = Number(creds.team_id);
 
     const resp = await this.call('POST', RUNWAY_ENDPOINTS.tasks, body, opts);
@@ -480,6 +519,14 @@ function accountToCredentials(account) {
   };
 }
 
+function runwayImageSize(resolution) {
+  return {
+    '1K': '1',
+    '2K': '2',
+    '4K': '4'
+  }[String(resolution || '').toUpperCase()] || '1';
+}
+
 function buildRunwayHeaders(creds, { includeAuth = true } = {}) {
   const headers = {
     Accept: 'application/json',
@@ -516,14 +563,15 @@ export function parseRunwayTaskResponse(resp) {
     throw new Error(`Runway task response is missing task.id: ${JSON.stringify(resp).slice(0, 200)}`);
   }
   const artifacts = Array.isArray(node.artifacts) ? node.artifacts : [];
+  const resultUrl = firstResultUrl(node, artifacts);
   const progressRatio = node.progressRatio != null ? Number(node.progressRatio) : null;
   return {
     taskId: node.id,
     status: mapRunwayStatus(node.status),
     rawStatus: node.status,
     progress: progressRatio != null && !Number.isNaN(progressRatio) ? Math.round(progressRatio * 100) : null,
-    videoUrl: artifacts[0]?.url || null,
-    thumbnailUrl: artifacts[0]?.previewUrls?.[0] || null,
+    videoUrl: resultUrl,
+    thumbnailUrl: artifacts[0]?.previewUrls?.[0] || node.sharedAsset?.previewUrls?.[0] || node.image?.previewUrls?.[0] || null,
     error: extractTaskError(node),
     rawResponse: resp
   };
@@ -564,6 +612,16 @@ function extractCanStartReason(resp) {
 function isCanStartUnavailable(err) {
   const status = Number(err?.status || err?.statusCode);
   return [404, 405, 501].includes(status);
+}
+
+function firstResultUrl(node, artifacts = []) {
+  return artifacts[0]?.url ||
+    node.sharedAsset?.url ||
+    node.image?.url ||
+    node.output?.url ||
+    node.result?.url ||
+    node.asset?.url ||
+    null;
 }
 
 function extractTaskError(node) {

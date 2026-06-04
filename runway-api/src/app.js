@@ -432,7 +432,17 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
       limit: request.query.limit,
       offset: request.query.offset,
       poolId: visiblePoolId(request)
-    }).map((task) => toV1Video(task, { request, config }))
+    }).filter((task) => task.kind !== 'image').map((task) => toV1Video(task, { request, config }))
+  }));
+
+  app.get('/v1/images', async (request) => ({
+    object: 'list',
+    data: db.listTasks({
+      status: request.query.status,
+      limit: request.query.limit,
+      offset: request.query.offset,
+      poolId: visiblePoolId(request)
+    }).filter((task) => task.kind === 'image').map((task) => toV1Image(task, { request, config }))
   }));
 
   app.get('/tasks/:id', async (request, reply) => {
@@ -453,12 +463,19 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
   app.get('/v1/videos/generations/:id/thumbnail', async (request, reply) => streamTaskMedia({ db, runway, request, reply, kind: 'thumbnail' }));
   app.get('/v1/videos/:id/content', async (request, reply) => streamTaskMedia({ db, runway, request, reply, kind: 'content' }));
   app.get('/v1/videos/:id/thumbnail', async (request, reply) => streamTaskMedia({ db, runway, request, reply, kind: 'thumbnail' }));
+  app.get('/v1/images/:id/content', async (request, reply) => streamTaskMedia({ db, runway, request, reply, kind: 'image' }));
 
   app.get('/v1/videos/:id', async (request, reply) => {
     const task = await getFreshTaskForRead({ db, runway, id: request.params.id });
     if (!task) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
     if (!canAccessTask(request, task)) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
     return toV1Video(task, { request, config });
+  });
+
+  app.get('/v1/images/:id', async (request, reply) => {
+    const task = await getFreshTaskForRead({ db, runway, id: request.params.id });
+    if (!task) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
+    return toV1Image(task, { request, config });
   });
 
   app.get('/tasks/:id/events', async (request, reply) => {
@@ -496,6 +513,12 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
     const { fields, files } = await readTaskRequest(request, config.uploadDir);
     const task = createPendingTask({ db, fields, files, auth: request.auth });
     return reply.code(202).send(toV1Video(task, { request, config }));
+  });
+
+  app.post('/v1/images/generations', async (request, reply) => {
+    const { fields, files } = await readTaskRequest(request, config.uploadDir);
+    const task = createPendingTask({ db, fields: { model: 'gpt_image_2', ...fields }, files });
+    return reply.code(202).send(toV1Image(task, { request, config }));
   });
 
   app.post('/tasks/:id/retry', async (request, reply) => {
@@ -554,6 +577,21 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
     const task = await cancelTask({ db, runway, id: request.params.id });
     if (!task) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
     return toV1Video(task, { request, config });
+  });
+
+  app.post('/v1/images/:id/retry', async (request, reply) => {
+    const original = db.getTask(request.params.id);
+    if (!original) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
+    if (original.status !== 'failed') {
+      return reply.code(409).send(toV1Error('invalid_state', '只有失败任务可以重试。'));
+    }
+    return reply.code(202).send(toV1Image(createRetryTask({ db, original }), { request, config }));
+  });
+
+  app.post('/v1/images/:id/cancel', async (request, reply) => {
+    const task = await cancelTask({ db, runway, id: request.params.id });
+    if (!task) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
+    return toV1Image(task, { request, config });
   });
 
   app.setErrorHandler((err, request, reply) => {
@@ -847,6 +885,11 @@ function extensionForMimeType(mimeType) {
 
 function createPendingTask({ db, fields, files, auth = null }) {
   const taskConfig = normalizeTaskInput(fields);
+  if (taskConfig.kind === 'image' && files.some((file) => file.mediaType === 'video')) {
+    const err = new Error('image generation only supports image references');
+    err.statusCode = 400;
+    throw err;
+  }
   const accountId = fields.accountId && fields.accountId !== 'auto' ? String(fields.accountId) : null;
   const account = accountId ? db.getAccount(accountId) : null;
   const requestedPoolId = normalizeOptionalId(fields.poolId ?? fields.pool_id);
@@ -889,7 +932,11 @@ function createRetryTask({ db, original }) {
     resolution: original.resolution,
     aspectRatio: original.aspectRatio,
     generateAudio: original.generateAudio,
-    exploreMode: original.exploreMode
+    exploreMode: original.exploreMode,
+    kind: original.kind,
+    quality: original.quality,
+    background: original.background,
+    numImages: original.numImages
   });
   for (const asset of original.assets) {
     db.addAsset({
@@ -1218,10 +1265,17 @@ function toV1Model(model) {
     created: 0,
     owned_by: 'video-api',
     name: model.label,
-    taskType: model.taskType,
+    taskType: model.kind || 'video',
+    runwayTaskType: model.taskType,
     durations: model.durations,
     resolutions: model.resolutions,
     aspectRatios: model.aspectRatios,
+    qualities: model.qualities,
+    defaultAspectRatio: model.defaultAspectRatio,
+    defaultResolution: model.defaultResolution,
+    defaultQuality: model.defaultQuality,
+    defaultNumImages: model.defaultNumImages,
+    allowedNumImages: model.allowedNumImages,
     supportsAudio: model.supportsAudio,
     supportsExploreMode: model.supportsExploreMode,
     supportsReferenceImages: model.supportsReferenceImages,
@@ -1233,6 +1287,42 @@ function toV1Model(model) {
 
 function toV1VideoGeneration(task, options = {}) {
   return toV1Video(task, 'video.generation', options);
+}
+
+function toV1Image(task, options = {}) {
+  const imageUrl = proxiedMediaUrl(task, 'image', options.request, options.config);
+  return {
+    id: task.id,
+    object: 'image.generation',
+    created: toUnixSeconds(task.createdAt),
+    created_at: toUnixSeconds(task.createdAt),
+    model: task.model,
+    prompt: task.prompt,
+    status: toV1TaskStatus(task.status),
+    progress: task.progress,
+    data: task.status === 'completed' && imageUrl ? [{ url: imageUrl }] : [],
+    error: ['failed', 'cancelled'].includes(task.status)
+      ? {
+          message: publicErrorMessage(task),
+          code: publicErrorCode(task),
+          type: 'image_generation_error',
+          param: null,
+          reason: publicErrorReason(task)
+        }
+      : null,
+    metadata: {
+      prompt: task.prompt,
+      aspect_ratio: task.aspectRatio,
+      resolution: task.resolution,
+      quality: task.quality,
+      background: task.background,
+      n: task.numImages,
+      created_at: task.createdAt,
+      updated_at: task.updatedAt,
+      submitted_at: task.submittedAt,
+      completed_at: task.completedAt
+    }
+  };
 }
 
 function toV1Video(task, object = 'video', options = {}) {
@@ -1374,10 +1464,11 @@ function proxiedMediaUrl(task, kind, request, config = {}) {
   const hasSource = kind === 'thumbnail' ? task.thumbnailUrl : task.videoUrl;
   if (!hasSource || !request) return hasSource || null;
   const expires = Math.floor(Date.now() / 1000) + (Number(config.videoProxyTokenTtlSeconds) || 3600);
-  const token = signVideoAccessToken(task.id, kind, expires, config);
+  const token = signVideoAccessToken(task.id, kind === 'image' ? 'content' : kind, expires, config);
   const baseUrl = publicBaseUrl(request, config);
   const suffix = kind === 'thumbnail' ? 'thumbnail' : 'content';
-  return `${baseUrl}/v1/videos/${encodeURIComponent(task.id)}/${suffix}?expires=${expires}&token=${encodeURIComponent(token)}`;
+  const route = kind === 'image' ? 'images' : 'videos';
+  return `${baseUrl}/v1/${route}/${encodeURIComponent(task.id)}/${suffix}?expires=${expires}&token=${encodeURIComponent(token)}`;
 }
 
 function publicBaseUrl(request, config = {}) {
@@ -1394,7 +1485,7 @@ function signVideoAccessToken(taskId, kind, expires, config = {}, db = null) {
 }
 
 function verifyVideoAccessTokenForPath(pathname, query = {}, config = {}, db = null) {
-  const match = String(pathname).match(/^\/v1\/videos(?:\/generations)?\/([^/]+)\/(content|thumbnail)$/);
+  const match = String(pathname).match(/^\/v1\/(?:videos(?:\/generations)?|images)\/([^/]+)\/(content|thumbnail)$/);
   if (!match) return false;
   const taskId = decodeURIComponent(match[1]);
   const kind = match[2] === 'thumbnail' ? 'thumbnail' : 'content';
@@ -1632,7 +1723,7 @@ function isPublicRoute(pathname) {
 }
 
 function isVideoContentRoute(pathname) {
-  return /^\/v1\/videos(?:\/generations)?\/[^/]+\/(?:content|thumbnail)$/.test(String(pathname));
+  return /^\/v1\/(?:videos(?:\/generations)?|images)\/[^/]+\/(?:content|thumbnail)$/.test(String(pathname));
 }
 
 function isPublicAsset(pathname) {

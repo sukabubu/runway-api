@@ -280,7 +280,9 @@ el.taskForm.addEventListener('submit', async (event) => {
   form.set('generateAudio', el.taskForm.generateAudio.checked ? 'true' : 'false');
   form.set('exploreMode', el.taskForm.exploreMode.checked ? 'true' : 'false');
   try {
-    const result = await fetchJson('/v1/videos', { method: 'POST', body: form });
+    const model = state.models.find((item) => item.id === el.modelSelect.value);
+    const endpoint = model?.taskType === 'image' ? '/v1/images/generations' : '/v1/videos';
+    const result = await fetchJson(endpoint, { method: 'POST', body: form });
     el.submitState.textContent = `已入队 ${result.id.slice(0, 8)}`;
     el.taskForm.reset();
     syncModelFields();
@@ -381,9 +383,12 @@ async function refreshModels() {
 function syncModelFields() {
   const model = state.models.find((item) => item.id === el.modelSelect.value) || state.models[0];
   if (!model) return;
-  fillSelect(el.durationSelect, model.durations, model.durations[0]);
-  fillSelect(el.resolutionSelect, model.resolutions, model.resolutions[0]);
-  fillSelect(el.aspectSelect, model.aspectRatios, model.aspectRatios[0]);
+  const isImage = model.taskType === 'image';
+  fillSelect(el.durationSelect, model.durations || ['1'], model.durations?.[0] || '1');
+  fillSelect(el.resolutionSelect, model.resolutions || [], model.resolutions?.[0]);
+  fillSelect(el.aspectSelect, model.aspectRatios || [], model.defaultAspectRatio || model.aspectRatios?.[0]);
+  el.durationSelect.closest('label').classList.toggle('hidden', isImage);
+  el.taskForm.generateAudio.closest('label').classList.toggle('hidden', isImage);
   el.taskForm.generateAudio.checked = Boolean(model.supportsAudio);
   el.taskForm.generateAudio.disabled = !model.supportsAudio;
   el.taskForm.exploreMode.checked = Boolean(model.supportsExploreMode);
@@ -537,7 +542,7 @@ function renderAccounts(accounts) {
         <div><strong>${escapeHtml(account.name)}</strong><small>${escapeHtml(account.remark || account.id)}</small></div>
         <span>${escapeHtml(poolName(account.poolId))}</span>
         <span class="badge ${account.isActive ? 'completed' : 'failed'}">${account.isActive ? '启用' : '停用'}</span>
-        <span>${account.inflight || 0}/${account.maxConcurrent || 2}</span>
+        <div><strong>总 ${account.inflight || 0}</strong><small>视频 ${account.videoInflight || 0}/${account.maxConcurrent || 2}</small><small>图片 ${account.imageInflight || 0}/${account.maxConcurrent || 2}</small></div>
         <div><strong>${account.generationUsed || 0}/${account.generationLimit || 80}</strong><small>剩余 ${account.generationRemaining ?? '-'}</small><small>每日自动刷新${account.generationResetAt ? ` · ${formatDate(account.generationResetAt)}` : ''}</small></div>
         <div><strong>${escapeHtml(formatDuration(account.todayAvgGenerationMs))}</strong><small>今日成功 ${account.todayCompletedCount || 0}</small></div>
         <div><span>${escapeHtml(account.proxyName || '不绑定/自动')}</span><small>${escapeHtml(formatProxyStrategy(account.proxyStrategy))}</small></div>
@@ -779,22 +784,24 @@ function renderTasks(tasks) {
   }
   el.tasks.innerHTML = `
     <div class="table-head tasks-head">
-      <span>任务</span><span>账号</span><span>状态</span><span>进度</span><span>失败原因/结果</span><span>操作</span>
+      <span>任务</span><span>类型</span><span>账号</span><span>状态</span><span>进度</span><span>失败原因/结果</span><span>操作</span>
     </div>
     ${tasks.map((task) => `
       <div class="table-row tasks-row">
         <div><strong title="${escapeAttr(task.prompt)}">${escapeHtml(task.prompt)}</strong><small>${escapeHtml(task.id)}</small></div>
+        <span>${task.kind === 'image' ? '图片' : '视频'}</span>
         <span>${escapeHtml(task.accountName || task.accountId || '自动')}</span>
         <span class="badge ${escapeAttr(task.status)}">${escapeHtml(formatStatus(task.status))}</span>
         <span>${task.progress == null ? '-' : `${task.progress}%`}</span>
         ${renderTaskResult(task)}
-        <span class="row-actions">${canCancelTask(task) ? `<button type="button" data-cancel-task="${escapeAttr(task.id)}">取消</button>` : ''}${task.status === 'failed' ? `<button type="button" data-retry="${escapeAttr(task.id)}">重试</button>` : ''}<button type="button" data-task-detail="${escapeAttr(task.id)}">详情</button></span>
+        <span class="row-actions">${canCancelTask(task) ? `<button type="button" data-cancel-task="${escapeAttr(task.id)}" data-kind="${escapeAttr(task.kind || 'video')}">取消</button>` : ''}${task.status === 'failed' ? `<button type="button" data-retry="${escapeAttr(task.id)}" data-kind="${escapeAttr(task.kind || 'video')}">重试</button>` : ''}<button type="button" data-task-detail="${escapeAttr(task.id)}">详情</button></span>
       </div>
     `).join('')}
   `;
   for (const button of $$('[data-retry]')) {
     button.addEventListener('click', async () => {
-      await fetchJson(`/v1/videos/${button.dataset.retry}/retry`, { method: 'POST' });
+      const kind = button.dataset.kind || 'video';
+      await fetchJson(`/v1/${kind === 'image' ? 'images' : 'videos'}/${button.dataset.retry}/retry`, { method: 'POST' });
       await refreshTasks();
     });
   }
@@ -803,7 +810,8 @@ function renderTasks(tasks) {
       if (!confirm('确认取消这个任务？已提交到 Runway 的任务会尝试同步取消。')) return;
       button.disabled = true;
       button.textContent = '取消中';
-      await fetchJson(`/v1/videos/${button.dataset.cancelTask}/cancel`, { method: 'POST' });
+      const kind = button.dataset.kind || 'video';
+      await fetchJson(`/v1/${kind === 'image' ? 'images' : 'videos'}/${button.dataset.cancelTask}/cancel`, { method: 'POST' });
       await refreshTasks();
     });
   }
@@ -821,19 +829,21 @@ function renderTasks(tasks) {
       try {
         button.disabled = true;
         button.textContent = '获取链接';
-        const video = await fetchJson(`/v1/videos/${button.dataset.openVideo}`);
-        if (!video.video_url) throw new Error('任务还没有可用的视频链接。');
+        const kind = button.dataset.kind || 'video';
+        const result = await fetchJson(`/v1/${kind === 'image' ? 'images' : 'videos'}/${button.dataset.openVideo}`);
+        const url = kind === 'image' ? result.data?.[0]?.url : result.video_url;
+        if (!url) throw new Error(kind === 'image' ? '任务还没有可用的图片链接。' : '任务还没有可用的视频链接。');
         if (tab) {
-          tab.location.href = video.video_url;
+          tab.location.href = url;
         } else {
-          window.location.href = video.video_url;
+          window.location.href = url;
         }
       } catch (err) {
         if (tab) tab.close();
         alert(err.message || '获取视频链接失败');
       } finally {
         button.disabled = false;
-        button.textContent = '打开视频';
+        button.textContent = button.dataset.kind === 'image' ? '打开图片' : '打开视频';
       }
     });
   }
@@ -845,7 +855,7 @@ function canCancelTask(task) {
 
 function renderTaskResult(task) {
   if (task.videoUrl) {
-    return `<button type="button" data-open-video="${escapeAttr(task.id)}">打开视频</button>`;
+    return `<button type="button" data-open-video="${escapeAttr(task.id)}" data-kind="${escapeAttr(task.kind || 'video')}">${task.kind === 'image' ? '打开图片' : '打开视频'}</button>`;
   }
   const raw = task.rawStatus ? ` / ${task.rawStatus}` : '';
   const text = task.status === 'failed'

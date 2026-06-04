@@ -18,6 +18,7 @@ export const RUNWAY_MODELS = [
   {
     id: 'seedance_2',
     label: 'Seedance 2.0',
+    kind: 'video',
     taskType: 'seedance_2',
     estimateFeature: 'gen4',
     canStartFeature: 'gen4.5',
@@ -34,6 +35,7 @@ export const RUNWAY_MODELS = [
   {
     id: 'gen4',
     label: 'Gen-4',
+    kind: 'video',
     taskType: 'gen4',
     estimateFeature: 'gen4',
     canStartFeature: 'gen4',
@@ -46,6 +48,27 @@ export const RUNWAY_MODELS = [
     supportsReferenceVideos: false,
     maxReferenceImages: 15,
     maxReferenceVideos: 0
+  },
+  {
+    id: 'gpt_image_2',
+    label: 'GPT Image 2',
+    kind: 'image',
+    taskType: 'gpt_image_2',
+    aspectRatios: ['21:9', '16:9', '3:2', '4:3', '5:4', '1:1', '4:5', '3:4', '2:3', '9:16'],
+    resolutions: ['1K', '2K', '4K'],
+    qualities: ['low', 'medium', 'high'],
+    supportsAudio: false,
+    supportsExploreMode: true,
+    supportsReferenceImages: true,
+    supportsReferenceVideos: false,
+    maxReferenceImages: 16,
+    maxReferenceVideos: 0,
+    defaultAspectRatio: '16:9',
+    defaultResolution: '1K',
+    defaultQuality: 'high',
+    defaultNumImages: 1,
+    allowedNumImages: [1, 4],
+    maxNumImages: 4
   }
 ];
 
@@ -91,9 +114,10 @@ export function normalizeTaskInput(input = {}) {
     throw err;
   }
   const config = {
+    kind: model.kind || 'video',
     prompt,
     model: model.id,
-    duration: model.durations.includes(duration) ? duration : model.durations[0],
+    duration: model.durations?.includes(duration) ? duration : (model.durations?.[0] ?? 1),
     resolution: model.resolutions.includes(input.resolution ?? openAiSize?.resolution) ? (input.resolution ?? openAiSize.resolution) : model.resolutions[0],
     aspectRatio: model.aspectRatios.includes(input.aspectRatio ?? input.aspect_ratio ?? openAiSize?.aspectRatio) ? (input.aspectRatio ?? input.aspect_ratio ?? openAiSize.aspectRatio) : model.aspectRatios[0],
     generateAudio: input.generateAudio == null ? DEFAULT_TASK_CONFIG.generateAudio : toBoolean(input.generateAudio),
@@ -103,6 +127,27 @@ export function normalizeTaskInput(input = {}) {
     const err = new Error('prompt is required');
     err.statusCode = 400;
     throw err;
+  }
+  if (model.kind === 'image') {
+    const imageSize = parseOpenAiImageSize(input.size);
+    const requestedAspectRatio = input.aspectRatio ?? input.aspect_ratio ?? imageSize?.aspectRatio;
+    const requestedResolution = input.resolution ?? imageSize?.resolution;
+    const requestedQuality = input.quality;
+    const requestedNumImages = Number(input.n ?? input.numImages ?? input.num_images ?? model.defaultNumImages ?? 1);
+    const allowedNumImages = model.allowedNumImages || Array.from({ length: model.maxNumImages || 4 }, (_, index) => index + 1);
+    if (!Number.isInteger(requestedNumImages) || !allowedNumImages.includes(requestedNumImages)) {
+      const err = new Error(`n must be one of: ${allowedNumImages.join(', ')}`);
+      err.statusCode = 400;
+      throw err;
+    }
+    config.duration = 1;
+    config.resolution = model.resolutions.includes(requestedResolution) ? requestedResolution : model.defaultResolution;
+    config.aspectRatio = model.aspectRatios.includes(requestedAspectRatio) ? requestedAspectRatio : model.defaultAspectRatio;
+    config.generateAudio = false;
+    config.exploreMode = input.exploreMode == null ? true : toBoolean(input.exploreMode);
+    config.quality = model.qualities.includes(requestedQuality) ? requestedQuality : model.defaultQuality;
+    config.background = ['auto', 'transparent', 'opaque'].includes(input.background) ? input.background : 'auto';
+    config.numImages = requestedNumImages;
   }
   if (!model.supportsAudio) config.generateAudio = false;
   if (!model.supportsExploreMode) config.exploreMode = false;
@@ -123,6 +168,45 @@ function parseOpenAiSize(value) {
     resolution,
     aspectRatio: nearestAspectRatio(longSide / shortSide, width >= height)
   };
+}
+
+function parseOpenAiImageSize(value) {
+  if (!value) return null;
+  const match = String(value).trim().toLowerCase().match(/^(\d+)x(\d+)$/);
+  if (!match) return null;
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (!width || !height) return null;
+  const shortSide = Math.min(width, height);
+  return {
+    resolution: nearestImageResolution(shortSide),
+    aspectRatio: nearestImageAspectRatio(width, height)
+  };
+}
+
+function nearestImageResolution(shortSide) {
+  if (shortSide >= 3000) return '4K';
+  if (shortSide >= 1500) return '2K';
+  return '1K';
+}
+
+function nearestImageAspectRatio(width, height) {
+  const ratio = width / height;
+  const candidates = [
+    ['21:9', 21 / 9],
+    ['16:9', 16 / 9],
+    ['3:2', 3 / 2],
+    ['4:3', 4 / 3],
+    ['5:4', 5 / 4],
+    ['1:1', 1],
+    ['4:5', 4 / 5],
+    ['3:4', 3 / 4],
+    ['2:3', 2 / 3],
+    ['9:16', 9 / 16]
+  ];
+  return candidates.reduce((best, current) => (
+    Math.abs(current[1] - ratio) < Math.abs(best[1] - ratio) ? current : best
+  ))[0];
 }
 
 function nearestResolution(value) {

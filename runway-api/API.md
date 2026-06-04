@@ -38,6 +38,14 @@ curl http://127.0.0.1:8790/v1/models
       "created": 0,
       "owned_by": "video-api",
       "name": "Seedance 2.0"
+    },
+    {
+      "id": "gpt_image_2",
+      "object": "model",
+      "created": 0,
+      "owned_by": "video-api",
+      "name": "GPT Image 2",
+      "taskType": "image"
     }
   ]
 }
@@ -223,6 +231,86 @@ curl -L -o output.mp4 \
 ```
 
 如果下载链接失效，重新调用 `GET /v1/videos/:id` 获取新的链接。
+
+## 创建图片
+
+### `POST /v1/images/generations`
+
+```bash
+curl -X POST http://127.0.0.1:8790/v1/images/generations \
+  -H "Authorization: Bearer <API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt_image_2",
+    "prompt": "A red apple on a clean white background.",
+    "size": "1024x1024",
+    "quality": "high",
+    "n": 1,
+    "media_urls": ["https://example.com/reference-image.jpg"]
+  }'
+```
+
+请求字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `prompt` | string | 是 | 图片提示词，也兼容 `input`；最大 `3500` 个字符 |
+| `model` | string | 否 | 默认 `gpt_image_2` |
+| `size` | string | 否 | 图片尺寸，例如 `1024x1024`、`1280x720`；默认按 `16:9`、`1K` 生成 |
+| `quality` | string | 否 | `low`、`medium`、`high` |
+| `n` | number | 否 | 图片数量，只支持 `1` 或 `4` |
+| `media_urls` | string/string[] | 否 | 图片参考 URL，不支持视频 |
+| `references` | array | 否 | 带名称的图片参考素材 |
+| `media[]` | file[] | 否 | multipart 上传的本地图片参考素材 |
+
+创建成功会返回异步任务对象：
+
+```json
+{
+  "id": "b3c9e2c4-4d4d-4a97-9d79-000000000000",
+  "object": "image.generation",
+  "created": 1779190000,
+  "created_at": 1779190000,
+  "model": "gpt_image_2",
+  "prompt": "A red apple on a clean white background.",
+  "status": "queued",
+  "progress": null,
+  "data": [],
+  "error": null
+}
+```
+
+## 查询图片
+
+### `GET /v1/images/:id`
+
+```bash
+curl -H "Authorization: Bearer <API_KEY>" \
+  http://127.0.0.1:8790/v1/images/b3c9e2c4-4d4d-4a97-9d79-000000000000
+```
+
+完成响应示例：
+
+```json
+{
+  "id": "b3c9e2c4-4d4d-4a97-9d79-000000000000",
+  "object": "image.generation",
+  "created": 1779190000,
+  "created_at": 1779190000,
+  "model": "gpt_image_2",
+  "prompt": "A red apple on a clean white background.",
+  "status": "completed",
+  "progress": 100,
+  "data": [
+    {
+      "url": "https://api.example.com/v1/images/b3c9e2c4-4d4d-4a97-9d79-000000000000/content?expires=..."
+    }
+  ],
+  "error": null
+}
+```
+
+图片下载链接失效时，重新调用 `GET /v1/images/:id` 获取新的链接。
 
 ## 查询列表
 

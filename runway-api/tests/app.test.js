@@ -1030,3 +1030,177 @@ describe('OpenAI compatible video API', () => {
     await new Promise((resolve) => mediaServer.close(resolve));
   });
 });
+
+describe('OpenAI compatible image API', () => {
+  it('creates, reads, retries, cancels, and streams image generation jobs', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-v1-image-test-'));
+    const mediaServer = http.createServer((request, response) => {
+      if (request.url === '/result.png') {
+        response.writeHead(200, { 'Content-Type': 'image/png' });
+        response.end(Buffer.from('89504e470d0a1a0a', 'hex'));
+        return;
+      }
+      response.writeHead(404);
+      response.end();
+    });
+    await new Promise((resolve) => mediaServer.listen(0, '127.0.0.1', resolve));
+    const mediaBaseUrl = `http://127.0.0.1:${mediaServer.address().port}`;
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'), { internalApiKey: 'secret' });
+    const app = await buildApp({
+      config: { internalApiKey: 'secret', uploadDir: path.join(dir, 'uploads') },
+      db,
+      browser: {
+        status: () => ({ started: false, pages: 0, headless: true }),
+        close: async () => {}
+      },
+      worker: {
+        start: () => {},
+        stop: async () => {}
+      },
+      logger: false
+    });
+
+    const created = await app.inject({
+      method: 'POST',
+      url: '/v1/images/generations',
+      headers: { authorization: 'Bearer secret' },
+      payload: {
+        prompt: 'draw an apple',
+        size: '1024x1024',
+        quality: 'medium',
+        n: 4
+      }
+    });
+    expect(created.statusCode).toBe(202);
+    const body = JSON.parse(created.body);
+    expect(body).toMatchObject({
+      object: 'image.generation',
+      model: 'gpt_image_2',
+      status: 'queued',
+      data: [],
+      metadata: {
+        aspect_ratio: '1:1',
+        resolution: '1K',
+        quality: 'medium',
+        n: 4
+      }
+    });
+
+    const detail = await app.inject({
+      method: 'GET',
+      url: `/v1/images/${body.id}`,
+      headers: { authorization: 'Bearer secret' }
+    });
+    expect(detail.statusCode).toBe(200);
+    expect(JSON.parse(detail.body)).toMatchObject({ id: body.id, object: 'image.generation' });
+
+    const cancelled = await app.inject({
+      method: 'POST',
+      url: `/v1/images/${body.id}/cancel`,
+      headers: { authorization: 'Bearer secret' }
+    });
+    expect(cancelled.statusCode).toBe(200);
+    expect(JSON.parse(cancelled.body)).toMatchObject({
+      id: body.id,
+      status: 'cancelled',
+      error: { type: 'image_generation_error' }
+    });
+
+    db.createTask({
+      id: 'failed-image-task',
+      kind: 'image',
+      status: 'failed',
+      prompt: 'draw an apple',
+      model: 'gpt_image_2',
+      duration: 1,
+      resolution: '1K',
+      aspectRatio: '1:1',
+      generateAudio: false,
+      exploreMode: true,
+      quality: 'high',
+      background: 'auto',
+      numImages: 1,
+      error: { reason: 'Image generation failed', code: 'INTERNAL' }
+    });
+    const retry = await app.inject({
+      method: 'POST',
+      url: '/v1/images/failed-image-task/retry',
+      headers: { authorization: 'Bearer secret' }
+    });
+    expect(retry.statusCode).toBe(202);
+    expect(JSON.parse(retry.body)).toMatchObject({ object: 'image.generation', status: 'queued' });
+
+    db.createTask({
+      id: 'completed-image-task',
+      kind: 'image',
+      status: 'completed',
+      prompt: 'draw an apple',
+      model: 'gpt_image_2',
+      duration: 1,
+      resolution: '1K',
+      aspectRatio: '1:1',
+      generateAudio: false,
+      exploreMode: true,
+      quality: 'high',
+      background: 'auto',
+      numImages: 1,
+      videoUrl: `${mediaBaseUrl}/result.png`,
+      completedAt: new Date().toISOString()
+    });
+    const completed = await app.inject({
+      method: 'GET',
+      url: '/v1/images/completed-image-task',
+      headers: { authorization: 'Bearer secret' }
+    });
+    expect(completed.statusCode).toBe(200);
+    const completedBody = JSON.parse(completed.body);
+    expect(completedBody.data[0].url).toContain('/v1/images/completed-image-task/content?');
+    const contentUrl = new URL(completedBody.data[0].url);
+    const content = await app.inject({
+      method: 'GET',
+      url: `${contentUrl.pathname}${contentUrl.search}`
+    });
+    expect(content.statusCode).toBe(200);
+    expect(content.headers['content-type']).toContain('image/png');
+
+    await app.close();
+    await new Promise((resolve) => mediaServer.close(resolve));
+  });
+
+  it('rejects video references for image generation', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-v1-image-video-test-'));
+    const mediaServer = http.createServer((request, response) => {
+      response.writeHead(200, { 'Content-Type': 'video/mp4' });
+      response.end(Buffer.from('video'));
+    });
+    await new Promise((resolve) => mediaServer.listen(0, '127.0.0.1', resolve));
+    const mediaUrl = `http://127.0.0.1:${mediaServer.address().port}/reference.mp4`;
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'), { internalApiKey: 'secret' });
+    const app = await buildApp({
+      config: { internalApiKey: 'secret', uploadDir: path.join(dir, 'uploads') },
+      db,
+      browser: {
+        status: () => ({ started: false, pages: 0, headless: true }),
+        close: async () => {}
+      },
+      worker: {
+        start: () => {},
+        stop: async () => {}
+      },
+      logger: false
+    });
+    const created = await app.inject({
+      method: 'POST',
+      url: '/v1/images/generations',
+      headers: { authorization: 'Bearer secret' },
+      payload: {
+        prompt: 'draw an apple',
+        media_urls: [mediaUrl]
+      }
+    });
+    expect(created.statusCode).toBe(400);
+    expect(JSON.parse(created.body).error.message).toContain('only supports image references');
+    await app.close();
+    await new Promise((resolve) => mediaServer.close(resolve));
+  });
+});

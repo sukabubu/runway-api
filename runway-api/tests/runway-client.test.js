@@ -22,6 +22,22 @@ describe('RunwayClient', () => {
     });
   });
 
+  it('extracts image result URLs from image task responses', () => {
+    expect(parseRunwayTaskResponse({
+      task: {
+        id: 'image-task',
+        status: 'SUCCEEDED',
+        progressRatio: 1,
+        sharedAsset: { url: 'https://image.example/result.png' }
+      }
+    })).toMatchObject({
+      taskId: 'image-task',
+      status: 'completed',
+      progress: 100,
+      videoUrl: 'https://image.example/result.png'
+    });
+  });
+
   it('invalidates credentials on auth failure', async () => {
     const db = {
       getCredentials: () => ({ jwt: 'jwt' }),
@@ -61,6 +77,51 @@ describe('RunwayClient', () => {
       url: 'https://example.com/reference.mp4',
       previewUrl: null
     }]);
+  });
+
+  it('submits GPT Image 2 tasks with prompt and image references', async () => {
+    const db = {
+      getCredentials: () => ({ jwt: 'jwt', team_id: 1 }),
+      getRuntimeConfig: () => ({ requestTimeoutMs: 120000, maxRetries: 0, retryBackoffMs: [] })
+    };
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ task: { id: 'image-task', status: 'PENDING' } })));
+    const client = new RunwayClient({ db, fetchImpl });
+    await client.submitTask({
+      kind: 'image',
+      prompt: 'draw an apple',
+      model: 'gpt_image_2',
+      resolution: '1K',
+      aspectRatio: '1:1',
+      quality: 'high',
+      numImages: 4,
+      exploreMode: true
+    }, [{
+      runwayAssetId: 'image-asset',
+      runwayUrl: 'https://example.com/reference.png',
+      previewUrl: 'https://example.com/preview.png',
+      mimeType: 'image/png'
+    }]);
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body).toMatchObject({
+      taskType: 'gpt_image_2',
+      asTeamId: 1,
+      options: {
+        prompt: 'draw an apple',
+        aspectRatio: '1:1',
+        size: '1',
+        quality: 'high',
+        numImages: 4,
+        referenceImages: [{
+          assetId: 'image-asset',
+          url: 'https://example.com/reference.png',
+          tag: 'reference'
+        }]
+      }
+    });
+    expect(body.options.textPrompt).toBeUndefined();
+    expect(body.options.resolution).toBeUndefined();
+    expect(body.options.background).toBeUndefined();
+    expect(body.options.recordingEnabled).toBeUndefined();
   });
 
   it('calls Runway task cancel endpoint', async () => {

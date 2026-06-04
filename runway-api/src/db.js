@@ -177,6 +177,7 @@ export class RunwayDatabase {
         runway_task_id TEXT,
         status TEXT NOT NULL,
         raw_status TEXT,
+        kind TEXT NOT NULL DEFAULT 'video',
         prompt TEXT NOT NULL,
         model TEXT NOT NULL,
         duration INTEGER NOT NULL,
@@ -226,6 +227,10 @@ export class RunwayDatabase {
 
     this.addColumnIfMissing('tasks', 'account_id', 'TEXT');
     this.addColumnIfMissing('tasks', 'pool_id', 'TEXT');
+    this.addColumnIfMissing('tasks', 'kind', "TEXT NOT NULL DEFAULT 'video'");
+    this.addColumnIfMissing('tasks', 'quality', 'TEXT');
+    this.addColumnIfMissing('tasks', 'background', 'TEXT');
+    this.addColumnIfMissing('tasks', 'num_images', 'INTEGER');
     this.addColumnIfMissing('tasks', 'locked_by', 'TEXT');
     this.addColumnIfMissing('tasks', 'locked_at', 'TEXT');
     this.addColumnIfMissing('tasks', 'attempt_count', 'INTEGER NOT NULL DEFAULT 0');
@@ -651,7 +656,9 @@ export class RunwayDatabase {
             AND tasks.submitted_at IS NOT NULL
             AND julianday(tasks.completed_at) >= julianday(tasks.submitted_at)
             AND date(tasks.completed_at, '+8 hours') = @todayKey
-        ) AS today_avg_generation_ms
+        ) AS today_avg_generation_ms,
+        ${accountKindInflightSql('video')} AS video_inflight,
+        ${accountKindInflightSql('image')} AS image_inflight
       FROM accounts
       LEFT JOIN proxies ON proxies.id = accounts.proxy_id
       ORDER BY accounts.created_at ASC
@@ -680,7 +687,9 @@ export class RunwayDatabase {
             AND tasks.submitted_at IS NOT NULL
             AND julianday(tasks.completed_at) >= julianday(tasks.submitted_at)
             AND date(tasks.completed_at, '+8 hours') = @todayKey
-        ) AS today_avg_generation_ms
+        ) AS today_avg_generation_ms,
+        ${accountKindInflightSql('video')} AS video_inflight,
+        ${accountKindInflightSql('image')} AS image_inflight
       FROM accounts
       LEFT JOIN proxies ON proxies.id = accounts.proxy_id
       WHERE accounts.id = @id
@@ -897,7 +906,9 @@ export class RunwayDatabase {
   getFirstAccount({ includeSecret = false } = {}) {
     this.resetExpiredGenerationUsage();
     const row = this.db.prepare(`
-      SELECT accounts.*, proxies.name AS proxy_name, proxies.url AS proxy_url
+      SELECT accounts.*, proxies.name AS proxy_name, proxies.url AS proxy_url,
+        ${accountKindInflightSql('video')} AS video_inflight,
+        ${accountKindInflightSql('image')} AS image_inflight
       FROM accounts
       LEFT JOIN proxies ON proxies.id = accounts.proxy_id
       ORDER BY accounts.created_at ASC
@@ -922,9 +933,13 @@ export class RunwayDatabase {
         COUNT(*) AS total,
         SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) AS active,
         SUM(CASE WHEN is_active = 1 AND (jwt IS NOT NULL OR cookie_header IS NOT NULL) AND team_id IS NOT NULL THEN 1 ELSE 0 END) AS ready,
-        SUM(CASE WHEN is_active = 1 AND inflight >= max_concurrent THEN 1 ELSE 0 END) AS full_concurrency,
+        SUM(CASE WHEN is_active = 1 AND (
+          ${accountKindInflightSql('video')} >= max_concurrent OR ${accountKindInflightSql('image')} >= max_concurrent
+        ) THEN 1 ELSE 0 END) AS full_concurrency,
         SUM(CASE WHEN is_active = 1 AND generation_used >= generation_limit THEN 1 ELSE 0 END) AS quota_exhausted,
         COALESCE(SUM(inflight), 0) AS inflight,
+        COALESCE(SUM(${accountKindInflightSql('video')}), 0) AS video_inflight,
+        COALESCE(SUM(${accountKindInflightSql('image')}), 0) AS image_inflight,
         COALESCE(SUM(generation_used), 0) AS generation_used,
         COALESCE(SUM(generation_limit), 0) AS generation_limit
       FROM accounts
@@ -949,6 +964,8 @@ export class RunwayDatabase {
       fullConcurrency: summary.full_concurrency || 0,
       quotaExhausted: summary.quota_exhausted || 0,
       inflight: summary.inflight || 0,
+      videoInflight: summary.video_inflight || 0,
+      imageInflight: summary.image_inflight || 0,
       generationUsed: summary.generation_used || 0,
       generationLimit: summary.generation_limit || 0,
       generationRemaining: Math.max((summary.generation_limit || 0) - (summary.generation_used || 0), 0),
@@ -1067,13 +1084,16 @@ export class RunwayDatabase {
     return { total: row.total || 0, active: row.active || 0 };
   }
 
-  getReadyAccounts({ includeSecret = true, poolId = undefined } = {}) {
+  getReadyAccounts({ includeSecret = true, poolId = undefined, kind = null } = {}) {
     this.resetExpiredGenerationUsage();
     const now = new Date().toISOString();
     const normalizedPoolId = normalizePoolId(poolId);
     const poolFilter = poolId === undefined ? '' : normalizedPoolId ? 'AND accounts.pool_id = @poolId' : 'AND accounts.pool_id IS NULL';
+    const taskKind = normalizeTaskKind(kind);
     const rows = this.db.prepare(`
-      SELECT accounts.*, proxies.name AS proxy_name, proxies.url AS proxy_url
+      SELECT accounts.*, proxies.name AS proxy_name, proxies.url AS proxy_url,
+        ${accountKindInflightSql('video')} AS video_inflight,
+        ${accountKindInflightSql('image')} AS image_inflight
       FROM accounts
       LEFT JOIN proxies ON proxies.id = accounts.proxy_id
       WHERE accounts.is_active = 1
@@ -1082,10 +1102,7 @@ export class RunwayDatabase {
         AND (accounts.submit_cooldown_until IS NULL OR accounts.submit_cooldown_until <= @now)
         AND accounts.generation_used < accounts.generation_limit
         ${poolFilter}
-      ORDER BY (inflight + (
-        SELECT COUNT(*) FROM tasks
-        WHERE tasks.account_id = accounts.id AND tasks.status = 'pending'
-      )) ASC,
+      ORDER BY ${accountKindLoadSql(taskKind)} ASC,
       CASE WHEN accounts.last_used_at IS NULL THEN 0 ELSE 1 END ASC,
       CASE WHEN accounts.last_used_at IS NULL THEN RANDOM() ELSE 0 END,
       accounts.last_used_at ASC,
@@ -1094,16 +1111,17 @@ export class RunwayDatabase {
     return rows.map((row) => hydrateAccount(row, { includeSecret }));
   }
 
-  selectLeastLoadedAccount({ preferredAccountId = null, poolId = undefined } = {}) {
+  selectLeastLoadedAccount({ preferredAccountId = null, poolId = undefined, kind = null } = {}) {
     this.resetExpiredGenerationUsage(preferredAccountId);
     const normalizedPoolId = normalizePoolId(poolId);
+    const taskKind = normalizeTaskKind(kind);
     const candidates = preferredAccountId
       ? [this.getAccount(preferredAccountId, { includeSecret: true })].filter(Boolean)
-      : this.getReadyAccounts({ includeSecret: true, poolId });
+      : this.getReadyAccounts({ includeSecret: true, poolId, kind: taskKind });
     for (const account of candidates) {
       if (!isReadyAccount(account)) continue;
       if (poolId !== undefined && normalizePoolId(account.poolId) !== normalizedPoolId) continue;
-      const inflight = Number(account.inflight) || 0;
+      const inflight = this.getAccountKindLoad(account.id, taskKind);
       const maxConcurrent = normalizeConcurrency(account.maxConcurrent);
       if (inflight >= maxConcurrent) continue;
       return account;
@@ -1114,7 +1132,8 @@ export class RunwayDatabase {
   acquireAccountForTask(taskId, { preferredAccountId = null, poolId = undefined } = {}) {
     const task = this.getTask(taskId);
     const effectivePoolId = poolId === undefined ? task?.poolId ?? null : normalizePoolId(poolId);
-    const account = this.selectLeastLoadedAccount({ preferredAccountId, poolId: effectivePoolId });
+    const taskKind = normalizeTaskKind(task?.kind);
+    const account = this.selectLeastLoadedAccount({ preferredAccountId, poolId: effectivePoolId, kind: taskKind });
     if (!account) return null;
     const now = new Date().toISOString();
     const result = this.db.prepare(`
@@ -1125,10 +1144,15 @@ export class RunwayDatabase {
         AND (jwt IS NOT NULL OR cookie_header IS NOT NULL)
         AND team_id IS NOT NULL
         AND (submit_cooldown_until IS NULL OR submit_cooldown_until <= @now)
-        AND inflight < max_concurrent
         AND generation_used < generation_limit
         AND ${effectivePoolId ? 'pool_id = @poolId' : 'pool_id IS NULL'}
-    `).run({ id: account.id, now, poolId: effectivePoolId });
+        AND (
+          SELECT COUNT(*) FROM tasks
+          WHERE tasks.account_id = accounts.id
+            AND tasks.status IN ('pending', 'submitting', 'queuing', 'generating')
+            AND COALESCE(tasks.kind, 'video') = @taskKind
+        ) < max_concurrent
+    `).run({ id: account.id, now, poolId: effectivePoolId, taskKind });
     if (result.changes === 0) return null;
     this.db.prepare('UPDATE tasks SET account_id = ?, updated_at = ? WHERE id = ?').run(account.id, now, taskId);
     this.db.prepare('UPDATE assets SET account_id = ?, updated_at = ? WHERE task_id = ?').run(account.id, now, taskId);
@@ -1143,6 +1167,28 @@ export class RunwayDatabase {
       SET inflight = CASE WHEN inflight > 0 THEN inflight - 1 ELSE 0 END, updated_at = ?
       WHERE id = ?
     `).run(now, accountId);
+  }
+
+  getAccountKindInflight(accountId, kind = null) {
+    if (!accountId) return 0;
+    return this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM tasks
+      WHERE account_id = ?
+        AND status IN ('submitting', 'queuing', 'generating')
+        AND COALESCE(kind, 'video') = ?
+    `).get(accountId, normalizeTaskKind(kind)).count || 0;
+  }
+
+  getAccountKindLoad(accountId, kind = null) {
+    if (!accountId) return 0;
+    return this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM tasks
+      WHERE account_id = ?
+        AND status IN ('pending', 'submitting', 'queuing', 'generating')
+        AND COALESCE(kind, 'video') = ?
+    `).get(accountId, normalizeTaskKind(kind)).count || 0;
   }
 
   markAccountAuthFailed(accountId, message = 'Runway auth failed') {
@@ -1220,12 +1266,12 @@ export class RunwayDatabase {
     const now = new Date().toISOString();
     this.db.prepare(`
       INSERT INTO tasks (
-        id, parent_task_id, pool_id, account_id, runway_task_id, status, raw_status, prompt, model, duration,
-        resolution, aspect_ratio, generate_audio, explore_mode, progress, video_url,
+        id, parent_task_id, pool_id, account_id, runway_task_id, status, raw_status, kind, prompt, model, duration,
+        resolution, aspect_ratio, generate_audio, explore_mode, quality, background, num_images, progress, video_url,
         thumbnail_url, error, raw_response, created_at, updated_at, submitted_at, completed_at
       ) VALUES (
-        @id, @parentTaskId, @poolId, @accountId, @runwayTaskId, @status, @rawStatus, @prompt, @model, @duration,
-        @resolution, @aspectRatio, @generateAudio, @exploreMode, @progress, @videoUrl,
+        @id, @parentTaskId, @poolId, @accountId, @runwayTaskId, @status, @rawStatus, @kind, @prompt, @model, @duration,
+        @resolution, @aspectRatio, @generateAudio, @exploreMode, @quality, @background, @numImages, @progress, @videoUrl,
         @thumbnailUrl, @error, @rawResponse, @createdAt, @updatedAt, @submittedAt, @completedAt
       )
     `).run({
@@ -1236,6 +1282,7 @@ export class RunwayDatabase {
       runwayTaskId: task.runwayTaskId || null,
       status: task.status || 'pending',
       rawStatus: task.rawStatus || null,
+      kind: task.kind || 'video',
       prompt: task.prompt,
       model: task.model,
       duration: task.duration,
@@ -1243,6 +1290,9 @@ export class RunwayDatabase {
       aspectRatio: task.aspectRatio,
       generateAudio: task.generateAudio ? 1 : 0,
       exploreMode: task.exploreMode ? 1 : 0,
+      quality: task.quality || null,
+      background: task.background || null,
+      numImages: task.numImages || null,
       progress: task.progress ?? null,
       videoUrl: task.videoUrl || null,
       thumbnailUrl: task.thumbnailUrl || null,
@@ -2042,6 +2092,30 @@ function isReadyAccount(account) {
   );
 }
 
+function normalizeTaskKind(kind) {
+  return String(kind || 'video') === 'image' ? 'image' : 'video';
+}
+
+function accountKindInflightSql(kind) {
+  const taskKind = normalizeTaskKind(kind);
+  return `(
+    SELECT COUNT(*) FROM tasks
+    WHERE tasks.account_id = accounts.id
+      AND tasks.status IN ('submitting', 'queuing', 'generating')
+      AND COALESCE(tasks.kind, 'video') = '${taskKind}'
+  )`;
+}
+
+function accountKindLoadSql(kind) {
+  const taskKind = normalizeTaskKind(kind);
+  return `(
+    SELECT COUNT(*) FROM tasks
+    WHERE tasks.account_id = accounts.id
+      AND tasks.status IN ('pending', 'submitting', 'queuing', 'generating')
+      AND COALESCE(tasks.kind, 'video') = '${taskKind}'
+  )`;
+}
+
 function accountToCredentialsRow(account) {
   return {
     id: 1,
@@ -2107,6 +2181,8 @@ function hydrateAccount(row, { includeSecret = false } = {}) {
     runwayCredits: parseJson(row.runway_credits_json),
     runwayCreditsCheckedAt: row.runway_credits_checked_at,
     inflight: row.inflight,
+    videoInflight: normalizeNonNegativeInt(row.video_inflight, 0),
+    imageInflight: normalizeNonNegativeInt(row.image_inflight, 0),
     errorCount: row.error_count,
     consecutiveErrorCount: row.consecutive_error_count,
     lastError: row.last_error,
@@ -2271,6 +2347,7 @@ function hydrateTask(row, assets = []) {
     runwayTaskId: row.runway_task_id,
     status: row.status,
     rawStatus: row.raw_status,
+    kind: row.kind || 'video',
     prompt: row.prompt,
     model: row.model,
     duration: row.duration,
@@ -2278,6 +2355,9 @@ function hydrateTask(row, assets = []) {
     aspectRatio: row.aspect_ratio,
     generateAudio: Boolean(row.generate_audio),
     exploreMode: Boolean(row.explore_mode),
+    quality: row.quality || null,
+    background: row.background || null,
+    numImages: row.num_images || null,
     progress: row.progress,
     videoUrl: row.video_url,
     thumbnailUrl: row.thumbnail_url,

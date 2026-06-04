@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mapRunwayStatus, normalizeTaskInput } from '../src/runway/config.js';
+import { findRunwayModel, mapRunwayStatus, normalizeTaskInput } from '../src/runway/config.js';
 
 describe('Runway config', () => {
   it('maps Runway statuses', () => {
@@ -51,5 +51,32 @@ describe('Runway config', () => {
   it('rejects prompts longer than 3500 characters', () => {
     expect(() => normalizeTaskInput({ prompt: 'x'.repeat(3501) })).toThrow('Too big: expected string to have <=3500 characters');
     expect(normalizeTaskInput({ prompt: 'x'.repeat(3500) }).prompt).toHaveLength(3500);
+  });
+
+  it('normalizes GPT Image 2 inputs', () => {
+    expect(findRunwayModel('gpt_image_2')).toMatchObject({
+      kind: 'image',
+      taskType: 'gpt_image_2',
+      maxReferenceImages: 16,
+      maxReferenceVideos: 0,
+      defaultAspectRatio: '16:9',
+      allowedNumImages: [1, 4]
+    });
+    expect(normalizeTaskInput({
+      model: 'gpt_image_2',
+      prompt: 'draw an apple',
+      size: '1024x1024',
+      quality: 'medium',
+      n: 4
+    })).toMatchObject({
+      kind: 'image',
+      model: 'gpt_image_2',
+      aspectRatio: '1:1',
+      resolution: '1K',
+      quality: 'medium',
+      numImages: 4,
+      generateAudio: false
+    });
+    expect(() => normalizeTaskInput({ model: 'gpt_image_2', prompt: 'x', n: 2 })).toThrow('n must be one of: 1, 4');
   });
 });

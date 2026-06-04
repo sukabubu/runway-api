@@ -47,16 +47,14 @@ describe('RunwayDatabase', () => {
       jwt: 'jwt-a',
       teamId: 1,
       assetGroupId: 'asset-a',
-      maxConcurrent: 2,
-      inflight: 2
+      maxConcurrent: 2
     });
     const second = db.createAccount({
       name: 'b',
       jwt: 'jwt-b',
       teamId: 2,
       assetGroupId: 'asset-b',
-      maxConcurrent: 2,
-      inflight: 1
+      maxConcurrent: 2
     });
     db.createAccount({
       name: 'c',
@@ -66,6 +64,21 @@ describe('RunwayDatabase', () => {
       maxConcurrent: 2,
       isActive: 0
     });
+    for (let index = 1; index <= 2; index += 1) {
+      db.createTask({
+        id: `first-active-video-${index}`,
+        accountId: first.id,
+        status: 'generating',
+        kind: 'video',
+        prompt: 'video',
+        model: 'seedance_2',
+        duration: 5,
+        resolution: '480p',
+        aspectRatio: '16:9',
+        generateAudio: true,
+        exploreMode: true
+      });
+    }
     expect(db.selectLeastLoadedAccount().id).toBe(second.id);
     expect(db.selectLeastLoadedAccount({ preferredAccountId: first.id })).toBeNull();
     db.close();
@@ -202,6 +215,74 @@ describe('RunwayDatabase', () => {
       acquired.push(db.acquireAccountForTask(task.id).id);
     }
     expect(new Set(acquired).size).toBe(accounts.length);
+    db.close();
+  });
+
+  it('tracks image and video concurrency separately per account', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-test-'));
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'));
+    const account = db.createAccount({
+      name: 'mixed-account',
+      jwt: 'jwt-a',
+      teamId: 1,
+      maxConcurrent: 2
+    });
+    for (let index = 1; index <= 2; index += 1) {
+      db.createTask({
+        id: `active-video-${index}`,
+        accountId: account.id,
+        status: 'generating',
+        kind: 'video',
+        prompt: 'video',
+        model: 'seedance_2',
+        duration: 5,
+        resolution: '480p',
+        aspectRatio: '16:9',
+        generateAudio: true,
+        exploreMode: true
+      });
+    }
+    expect(db.selectLeastLoadedAccount({ preferredAccountId: account.id, kind: 'video' })).toBeNull();
+    expect(db.selectLeastLoadedAccount({ preferredAccountId: account.id, kind: 'image' }).id).toBe(account.id);
+    const imageTask = db.createTask({
+      id: 'new-image',
+      status: 'pending',
+      kind: 'image',
+      prompt: 'image',
+      model: 'gpt_image_2',
+      duration: 1,
+      resolution: '1K',
+      aspectRatio: '1:1',
+      generateAudio: false,
+      exploreMode: true,
+      quality: 'high',
+      numImages: 1
+    });
+    expect(db.acquireAccountForTask(imageTask.id, { preferredAccountId: account.id }).id).toBe(account.id);
+    const updated = db.getAccount(account.id);
+    expect(updated.videoInflight).toBe(2);
+    expect(db.getAccountKindLoad(account.id, 'image')).toBe(1);
+    expect(updated.inflight).toBe(1);
+
+    db.updateTask('active-video-1', { status: 'completed' });
+    db.updateTask('active-video-2', { status: 'completed' });
+    db.createTask({
+      id: 'active-image-1',
+      accountId: account.id,
+      status: 'generating',
+      kind: 'image',
+      prompt: 'image',
+      model: 'gpt_image_2',
+      duration: 1,
+      resolution: '1K',
+      aspectRatio: '1:1',
+      generateAudio: false,
+      exploreMode: true,
+      quality: 'high',
+      numImages: 1
+    });
+    expect(db.selectLeastLoadedAccount({ preferredAccountId: account.id, kind: 'image' })).toBeNull();
+    expect(db.selectLeastLoadedAccount({ preferredAccountId: account.id, kind: 'video' }).id).toBe(account.id);
     db.close();
   });
 
