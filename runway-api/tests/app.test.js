@@ -538,6 +538,20 @@ describe('OpenAI compatible video API', () => {
       error: { code: 'unauthorized', type: 'invalid_request_error' }
     });
 
+    const preflight = await app.inject({
+      method: 'OPTIONS',
+      url: '/v1/videos',
+      headers: {
+        origin: 'https://create.megabyai.cc',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'authorization,content-type'
+      }
+    });
+    expect(preflight.statusCode).toBe(204);
+    expect(preflight.headers['access-control-allow-origin']).toBe('*');
+    expect(preflight.headers['access-control-allow-headers']).toContain('Authorization');
+    expect(preflight.headers['access-control-allow-methods']).toContain('POST');
+
     const created = await app.inject({
       method: 'POST',
       url: '/v1/videos',

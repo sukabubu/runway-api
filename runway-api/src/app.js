@@ -28,8 +28,8 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
 
   app.addHook('preHandler', async (request, reply) => {
     const pathname = request.url.split('?')[0];
-    if (pathname.startsWith('/api/')) setExtensionCorsHeaders(reply);
-    if (request.method === 'OPTIONS' && pathname.startsWith('/api/')) {
+    if (allowsCrossOriginClient(pathname)) setExtensionCorsHeaders(reply);
+    if (request.method === 'OPTIONS' && allowsCrossOriginClient(pathname)) {
       return reply.code(204).send();
     }
     if (isPublicRoute(pathname)) return;
@@ -80,6 +80,8 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
   }));
 
   app.get('/models', async () => ({ models: RUNWAY_MODELS }));
+  app.options('/v1/*', async (request, reply) => reply.code(204).send());
+  app.options('/tasks*', async (request, reply) => reply.code(204).send());
   app.get('/v1/models', async () => ({
     object: 'list',
     data: RUNWAY_MODELS.map(toV1Model)
@@ -1651,6 +1653,12 @@ function setExtensionCorsHeaders(reply) {
   reply.header('Access-Control-Allow-Origin', '*');
   reply.header('Access-Control-Allow-Headers', 'Authorization, Content-Type');
   reply.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+}
+
+function allowsCrossOriginClient(pathname) {
+  return pathname.startsWith('/api/')
+    || pathname.startsWith('/v1/')
+    || pathname.startsWith('/tasks');
 }
 
 function extractImportItems(body, pluralKey, singularKey) {
