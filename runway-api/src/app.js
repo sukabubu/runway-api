@@ -1,10 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import http from 'node:http';
+import https from 'node:https';
 import { fileURLToPath } from 'node:url';
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { Readable } from 'node:stream';
 import Fastify from 'fastify';
 import multipart from '@fastify/multipart';
 import { RUNWAY_MODELS, normalizeTaskInput } from './runway/config.js';
@@ -16,6 +17,7 @@ const execFileAsync = promisify(execFile);
 
 export async function buildApp({ config, db, browser, worker, proxyManager = null, runway = null, systemUpdater = updateFromRemote, logger }) {
   const app = Fastify({ logger });
+  app.decorate('runwayConfig', config);
   await app.register(multipart, {
     limits: {
       files: 15,
@@ -1229,34 +1231,121 @@ async function streamTaskSourceMedia({ db, runway, task, request, reply, kind, d
 
   const headers = {};
   if (request.headers.range) headers.Range = request.headers.range;
-  const response = await fetch(sourceUrl, {
-    method: request.method === 'HEAD' ? 'HEAD' : 'GET',
-    headers
-  });
-  if (shouldRefreshMediaSource(response.status) && !didRefresh) {
+  const useAccel = shouldUseMediaAccel(request);
+  const upstreamMethod = useAccel && request.method !== 'HEAD' && !request.headers.range
+    ? 'HEAD'
+    : request.method === 'HEAD' ? 'HEAD' : 'GET';
+  let upstream;
+  try {
+    upstream = await openMediaSource(sourceUrl, { method: upstreamMethod, headers });
+  } catch (err) {
+    if (!didRefresh) {
+      const freshTask = await getFreshTaskForRead({ db, runway, id: task.id });
+      const freshSourceUrl = kind === 'thumbnail' ? freshTask?.thumbnailUrl : freshTask?.videoUrl;
+      if (freshTask && freshSourceUrl && freshSourceUrl !== sourceUrl) {
+        return streamTaskSourceMedia({ db, runway, task: freshTask, request, reply, kind, didRefresh: true });
+      }
+    }
+    return reply.code(502).send(toV1Error('media_proxy_failed', `视频代理请求失败：${err.message}`));
+  }
+  if (shouldRefreshMediaSource(upstream.statusCode) && !didRefresh) {
+    upstream.resume();
     const freshTask = await getFreshTaskForRead({ db, runway, id: task.id });
     const freshSourceUrl = kind === 'thumbnail' ? freshTask?.thumbnailUrl : freshTask?.videoUrl;
     if (freshTask && freshSourceUrl && freshSourceUrl !== sourceUrl) {
       return streamTaskSourceMedia({ db, runway, task: freshTask, request, reply, kind, didRefresh: true });
     }
   }
-  if (!response.ok) {
-    const text = await response.text().catch(() => '');
-    return reply.code(502).send(toV1Error('media_proxy_failed', `视频代理请求失败：HTTP ${response.status}${text ? ` ${text.slice(0, 200)}` : ''}`));
+  if (upstream.statusCode < 200 || upstream.statusCode >= 300) {
+    const text = await readSmallUpstreamBody(upstream);
+    return reply.code(502).send(toV1Error('media_proxy_failed', `视频代理请求失败：HTTP ${upstream.statusCode}${text ? ` ${text.slice(0, 200)}` : ''}`));
   }
 
-  for (const header of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'last-modified', 'etag']) {
-    const value = response.headers.get(header);
-    if (value) reply.header(header, value);
+  if (useAccel) {
+    const statusCode = upstream.statusCode;
+    upstream.resume();
+    setMediaHeaders(reply, upstream.headers, { includeLength: false });
+    reply.header('X-Accel-Redirect', mediaAccelPath(sourceUrl, request));
+    reply.header('X-Accel-Buffering', 'no');
+    return reply.code(statusCode).send();
   }
-  reply.header('Cache-Control', 'private, no-store');
-  reply.header('X-Content-Type-Options', 'nosniff');
-  if (request.method === 'HEAD') return reply.code(response.status).send();
-  return reply.code(response.status).send(Readable.fromWeb(response.body));
+
+  setMediaHeaders(reply, upstream.headers);
+  if (request.method === 'HEAD') {
+    upstream.resume();
+    return reply.code(upstream.statusCode).send();
+  }
+  request.raw.once('close', () => upstream.destroy());
+  return reply.code(upstream.statusCode).send(upstream);
 }
 
 function shouldRefreshMediaSource(status) {
   return status === 401 || status === 403 || status === 404;
+}
+
+function shouldUseMediaAccel(request) {
+  return Boolean(
+    request.server?.runwayConfig?.mediaAccelEnabled &&
+    isLoopbackAddress(request.ip) &&
+    (request.headers['x-forwarded-proto'] || request.headers['x-real-ip'] || request.headers['x-forwarded-for'])
+  );
+}
+
+function isLoopbackAddress(address) {
+  const value = String(address || '').replace(/^::ffff:/, '');
+  return value === '127.0.0.1' || value === '::1';
+}
+
+function mediaAccelPath(sourceUrl, request) {
+  const target = new URL(sourceUrl);
+  const prefix = String(request.server?.runwayConfig?.mediaAccelPrefix || '/__runway_media_proxy__/').replace(/\/?$/, '/');
+  return `${prefix}${target.protocol.replace(/:$/, '')}/${target.host}${target.pathname}${target.search}`;
+}
+
+function setMediaHeaders(reply, headers, { includeLength = true } = {}) {
+  for (const header of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'last-modified', 'etag']) {
+    if (!includeLength && (header === 'content-length' || header === 'content-range')) continue;
+    const value = headers[header];
+    if (value) reply.header(header, value);
+  }
+  reply.header('Cache-Control', 'private, no-store');
+  reply.header('X-Content-Type-Options', 'nosniff');
+}
+
+async function openMediaSource(url, { method, headers, timeoutMs = 8000 }) {
+  const target = new URL(url);
+  const transport = target.protocol === 'https:' ? https : http;
+  return new Promise((resolve, reject) => {
+    const req = transport.request(target, {
+      method,
+      headers: {
+        ...headers,
+        Connection: 'close'
+      },
+      timeout: timeoutMs
+    }, (res) => resolve(res));
+    req.on('timeout', () => {
+      req.destroy(new Error(`upstream media timed out after ${timeoutMs}ms`));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function readSmallUpstreamBody(stream, maxBytes = 512) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    let size = 0;
+    stream.on('data', (chunk) => {
+      if (size < maxBytes) {
+        const next = Buffer.from(chunk);
+        chunks.push(next.slice(0, Math.max(0, maxBytes - size)));
+        size += next.length;
+      }
+    });
+    stream.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    stream.on('error', () => resolve(''));
+  });
 }
 
 function presentTaskForResponse(task, request, config) {

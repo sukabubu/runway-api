@@ -21,6 +21,8 @@ export function loadConfig(env = process.env) {
     internalApiKey: env.INTERNAL_API_KEY || 'change-me',
     publicBaseUrl: env.PUBLIC_BASE_URL || '',
     videoProxyTokenTtlSeconds: int(env.VIDEO_PROXY_TOKEN_TTL_SECONDS, 3600),
+    mediaAccelEnabled: bool(env.MEDIA_ACCEL_ENABLED, false),
+    mediaAccelPrefix: env.MEDIA_ACCEL_PREFIX || '/__runway_media_proxy__/',
     autoRestartOnUpdate: bool(env.AUTO_RESTART_ON_UPDATE, true),
     restartCommand: env.RESTART_COMMAND || '',
     pm2ProcessName: env.PM2_PROCESS_NAME || env.RUNWAY_PM2_NAME || 'runway-api',

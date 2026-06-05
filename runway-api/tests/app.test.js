@@ -879,6 +879,92 @@ describe('OpenAI compatible video API', () => {
     await new Promise((resolve) => mediaServer.close(resolve));
   });
 
+  it('uses internal media acceleration only for loopback reverse proxy requests', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-media-accel-test-'));
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'), { internalApiKey: 'secret' });
+    const mediaServer = http.createServer((request, response) => {
+      if (request.url === '/fresh.mp4?_jwt=upstream-secret') {
+        response.writeHead(request.method === 'HEAD' ? 200 : 206, {
+          'Content-Type': 'video/mp4',
+          'Content-Length': '5',
+          'Accept-Ranges': 'bytes'
+        });
+        response.end(request.method === 'HEAD' ? '' : 'FRESH');
+        return;
+      }
+      response.writeHead(404);
+      response.end();
+    });
+    await new Promise((resolve) => mediaServer.listen(0, '127.0.0.1', resolve));
+    const mediaBaseUrl = `http://127.0.0.1:${mediaServer.address().port}`;
+    db.createTask({
+      id: 'accelerated-media-task',
+      status: 'completed',
+      rawStatus: 'SUCCEEDED',
+      prompt: 'hello',
+      model: 'seedance_2',
+      duration: 5,
+      resolution: '480p',
+      aspectRatio: '16:9',
+      generateAudio: true,
+      exploreMode: true,
+      progress: 100,
+      videoUrl: `${mediaBaseUrl}/fresh.mp4?_jwt=upstream-secret`,
+      submittedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString()
+    });
+    const app = await buildApp({
+      config: {
+        internalApiKey: 'secret',
+        uploadDir: path.join(dir, 'uploads'),
+        mediaAccelEnabled: true
+      },
+      db,
+      browser: {
+        status: () => ({ started: false, pages: 0, headless: true }),
+        close: async () => {}
+      },
+      worker: {
+        start: () => {},
+        stop: async () => {}
+      },
+      logger: false
+    });
+
+    const listed = await app.inject({
+      method: 'GET',
+      url: '/tasks',
+      headers: { authorization: 'Bearer secret' }
+    });
+    const contentUrl = new URL(JSON.parse(listed.body).tasks[0].videoUrl);
+    const direct = await app.inject({
+      method: 'GET',
+      url: `${contentUrl.pathname}${contentUrl.search}`,
+      headers: { Range: 'bytes=0-4' }
+    });
+    expect(direct.statusCode).toBe(206);
+    expect(direct.headers['x-accel-redirect']).toBeUndefined();
+    expect(direct.body).toBe('FRESH');
+
+    const accelerated = await app.inject({
+      method: 'GET',
+      url: `${contentUrl.pathname}${contentUrl.search}`,
+      headers: {
+        Range: 'bytes=0-4',
+        'X-Forwarded-Proto': 'https',
+        'X-Real-IP': '203.0.113.10'
+      },
+      remoteAddress: '127.0.0.1'
+    });
+    expect(accelerated.statusCode).toBe(206);
+    expect(accelerated.headers['x-accel-redirect']).toBe(`/__runway_media_proxy__/http/127.0.0.1:${mediaServer.address().port}/fresh.mp4?_jwt=upstream-secret`);
+    expect(accelerated.headers['x-accel-redirect']).not.toContain(contentUrl.searchParams.get('token'));
+    expect(accelerated.body).toBe('');
+
+    await app.close();
+    await new Promise((resolve) => mediaServer.close(resolve));
+  });
+
   it('returns specific but sanitized public failure reasons', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-public-error-test-'));
     const db = new RunwayDatabase(path.join(dir, 'test.sqlite'), { internalApiKey: 'secret' });
