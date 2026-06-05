@@ -757,7 +757,15 @@ describe('OpenAI compatible video API', () => {
     });
     expect(content.statusCode).toBe(200);
     expect(content.headers['content-type']).toContain('video/mp4');
-    expect(content.body).toBe('VIDEO_CONTENT');
+    expect(content.body).toBe('VIDEO_V1');
+
+    const head = await app.inject({
+      method: 'HEAD',
+      url: `${contentUrl.pathname}${contentUrl.search}`
+    });
+    expect(head.statusCode).toBe(200);
+    expect(head.headers['content-type']).toContain('video/mp4');
+    expect(head.body).toBe('');
 
     const taskDetail = await app.inject({
       method: 'GET',
@@ -772,12 +780,100 @@ describe('OpenAI compatible video API', () => {
     expect(taskBody.rawResponse).toBeUndefined();
     expect(JSON.stringify(taskBody)).not.toContain(`${mediaBaseUrl}/raw-asset.png`);
     expect(JSON.stringify(taskBody)).not.toContain(`${mediaBaseUrl}/raw-preview.png`);
-    expect(db.getTask('completed-task').videoUrl).toBe(`${mediaBaseUrl}/video-tasks.mp4`);
-    expect(pollTask).toHaveBeenCalledTimes(3);
+    expect(db.getTask('completed-task').videoUrl).toBe(`${mediaBaseUrl}/video-content.mp4`);
+    expect(pollTask).toHaveBeenCalledTimes(2);
     expect(pollTask).toHaveBeenCalledWith('runway-task', expect.objectContaining({
       account: expect.objectContaining({ id: account.id }),
       operation: 'task_signed_url_refresh'
     }));
+
+    await app.close();
+    await new Promise((resolve) => mediaServer.close(resolve));
+  });
+
+  it('refreshes media source only when the stored signed URL is rejected', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-media-refresh-test-'));
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'), { internalApiKey: 'secret' });
+    const mediaServer = http.createServer((request, response) => {
+      if (request.url === '/expired.mp4') {
+        response.writeHead(403, { 'Content-Type': 'text/plain' });
+        response.end('expired');
+        return;
+      }
+      if (request.url === '/fresh.mp4') {
+        response.writeHead(206, {
+          'Content-Type': 'video/mp4',
+          'Content-Range': 'bytes 0-4/5',
+          'Content-Length': '5',
+          'Accept-Ranges': 'bytes'
+        });
+        response.end('FRESH');
+        return;
+      }
+      response.writeHead(404);
+      response.end();
+    });
+    await new Promise((resolve) => mediaServer.listen(0, '127.0.0.1', resolve));
+    const mediaBaseUrl = `http://127.0.0.1:${mediaServer.address().port}`;
+    const account = db.createAccount({ name: '账号', jwt: 'jwt', teamId: 1 });
+    db.createTask({
+      id: 'expired-media-task',
+      accountId: account.id,
+      runwayTaskId: 'runway-task',
+      status: 'completed',
+      rawStatus: 'SUCCEEDED',
+      prompt: 'hello',
+      model: 'seedance_2',
+      duration: 5,
+      resolution: '480p',
+      aspectRatio: '16:9',
+      generateAudio: true,
+      exploreMode: true,
+      progress: 100,
+      videoUrl: `${mediaBaseUrl}/expired.mp4`,
+      submittedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString()
+    });
+    const pollTask = vi.fn().mockResolvedValueOnce({
+      taskId: 'runway-task',
+      status: 'completed',
+      rawStatus: 'SUCCEEDED',
+      progress: 100,
+      videoUrl: `${mediaBaseUrl}/fresh.mp4`,
+      rawResponse: { task: { id: 'runway-task' } }
+    });
+    const app = await buildApp({
+      config: { internalApiKey: 'secret', uploadDir: path.join(dir, 'uploads') },
+      db,
+      browser: {
+        status: () => ({ started: false, pages: 0, headless: true }),
+        close: async () => {}
+      },
+      worker: {
+        start: () => {},
+        stop: async () => {}
+      },
+      runway: { pollTask },
+      logger: false
+    });
+
+    const listed = await app.inject({
+      method: 'GET',
+      url: '/tasks',
+      headers: { authorization: 'Bearer secret' }
+    });
+    const contentUrl = new URL(JSON.parse(listed.body).tasks[0].videoUrl);
+    const content = await app.inject({
+      method: 'GET',
+      url: `${contentUrl.pathname}${contentUrl.search}`,
+      headers: { Range: 'bytes=0-4' }
+    });
+
+    expect(content.statusCode).toBe(206);
+    expect(content.headers['content-range']).toBe('bytes 0-4/5');
+    expect(content.body).toBe('FRESH');
+    expect(db.getTask('expired-media-task').videoUrl).toBe(`${mediaBaseUrl}/fresh.mp4`);
+    expect(pollTask).toHaveBeenCalledTimes(1);
 
     await app.close();
     await new Promise((resolve) => mediaServer.close(resolve));

@@ -464,6 +464,11 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
   app.get('/v1/videos/:id/content', async (request, reply) => streamTaskMedia({ db, runway, request, reply, kind: 'content' }));
   app.get('/v1/videos/:id/thumbnail', async (request, reply) => streamTaskMedia({ db, runway, request, reply, kind: 'thumbnail' }));
   app.get('/v1/images/:id/content', async (request, reply) => streamTaskMedia({ db, runway, request, reply, kind: 'image' }));
+  app.head('/v1/videos/generations/:id/content', async (request, reply) => streamTaskMedia({ db, runway, request, reply, kind: 'content' }));
+  app.head('/v1/videos/generations/:id/thumbnail', async (request, reply) => streamTaskMedia({ db, runway, request, reply, kind: 'thumbnail' }));
+  app.head('/v1/videos/:id/content', async (request, reply) => streamTaskMedia({ db, runway, request, reply, kind: 'content' }));
+  app.head('/v1/videos/:id/thumbnail', async (request, reply) => streamTaskMedia({ db, runway, request, reply, kind: 'thumbnail' }));
+  app.head('/v1/images/:id/content', async (request, reply) => streamTaskMedia({ db, runway, request, reply, kind: 'image' }));
 
   app.get('/v1/videos/:id', async (request, reply) => {
     const task = await getFreshTaskForRead({ db, runway, id: request.params.id });
@@ -1208,11 +1213,15 @@ function shouldRefreshSignedUrls(task, runway) {
 }
 
 async function streamTaskMedia({ db, runway, request, reply, kind }) {
-  const task = await getFreshTaskForRead({ db, runway, id: request.params.id });
+  const task = db.getTask(request.params.id);
   if (!task) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
   if (!canAccessTask(request, task)) return reply.code(404).send(toV1Error('task_not_found', '任务不存在。'));
   if (task.status !== 'completed') return reply.code(409).send(toV1Error('task_not_completed', '任务还没有完成。'));
 
+  return streamTaskSourceMedia({ db, runway, task, request, reply, kind, didRefresh: false });
+}
+
+async function streamTaskSourceMedia({ db, runway, task, request, reply, kind, didRefresh }) {
   const sourceUrl = kind === 'thumbnail' ? task.thumbnailUrl : task.videoUrl;
   if (!sourceUrl) {
     return reply.code(404).send(toV1Error('media_not_found', kind === 'thumbnail' ? '缩略图链接不存在。' : '视频链接不存在。'));
@@ -1220,7 +1229,17 @@ async function streamTaskMedia({ db, runway, request, reply, kind }) {
 
   const headers = {};
   if (request.headers.range) headers.Range = request.headers.range;
-  const response = await fetch(sourceUrl, { headers });
+  const response = await fetch(sourceUrl, {
+    method: request.method === 'HEAD' ? 'HEAD' : 'GET',
+    headers
+  });
+  if (shouldRefreshMediaSource(response.status) && !didRefresh) {
+    const freshTask = await getFreshTaskForRead({ db, runway, id: task.id });
+    const freshSourceUrl = kind === 'thumbnail' ? freshTask?.thumbnailUrl : freshTask?.videoUrl;
+    if (freshTask && freshSourceUrl && freshSourceUrl !== sourceUrl) {
+      return streamTaskSourceMedia({ db, runway, task: freshTask, request, reply, kind, didRefresh: true });
+    }
+  }
   if (!response.ok) {
     const text = await response.text().catch(() => '');
     return reply.code(502).send(toV1Error('media_proxy_failed', `视频代理请求失败：HTTP ${response.status}${text ? ` ${text.slice(0, 200)}` : ''}`));
@@ -1232,7 +1251,12 @@ async function streamTaskMedia({ db, runway, request, reply, kind }) {
   }
   reply.header('Cache-Control', 'private, no-store');
   reply.header('X-Content-Type-Options', 'nosniff');
+  if (request.method === 'HEAD') return reply.code(response.status).send();
   return reply.code(response.status).send(Readable.fromWeb(response.body));
+}
+
+function shouldRefreshMediaSource(status) {
+  return status === 401 || status === 403 || status === 404;
 }
 
 function presentTaskForResponse(task, request, config) {
