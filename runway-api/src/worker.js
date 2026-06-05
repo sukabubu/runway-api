@@ -133,6 +133,24 @@ export class TaskWorker {
         status: 'failed',
         message: err.message
       });
+      const retryTask = this.db.getTask?.(task.id) || task;
+      if (this.shouldAutoRetrySubmissionFailure(retryTask, err)) {
+        this.db.releaseAccount?.(account.id);
+        this.db.requeueTaskForAutoRetry?.(task.id, {
+          reason: getRetryableErrorReason(err),
+          error: {
+            code: err.code || 'SUBMIT_FAILED',
+            message: err.message,
+            status: err.status || err.statusCode || null,
+            body: err.body || null
+          },
+          runwayTaskId: retryTask.runwayTaskId || null,
+          rawStatus: retryTask.rawStatus || null
+        });
+        this.queue.release(task.id);
+        this.logger.warn?.({ err, taskId: task.id, accountId: account.id }, 'task auto-requeued after retryable submission failure');
+        return;
+      }
       this.db.updateTask(task.id, {
         status: 'failed',
         error: {
@@ -272,15 +290,32 @@ export class TaskWorker {
     if ((Number(task.attemptCount) || 0) >= maxAttempts) return false;
     return isRetryableUpstreamFailure(update);
   }
+
+  shouldAutoRetrySubmissionFailure(task, err) {
+    if (!this.db.requeueTaskForAutoRetry) return false;
+    const maxAttempts = Number(this.config.upstreamAutoRetryAttempts ?? DEFAULT_UPSTREAM_AUTO_RETRY_ATTEMPTS);
+    if (maxAttempts <= 1) return false;
+    if ((Number(task.attemptCount) || 0) >= maxAttempts) return false;
+    return isRetryableSubmissionFailure(err);
+  }
 }
 
 export function isRetryableUpstreamFailure(update) {
   const reason = getRetryableUpstreamFailureReason(update);
   if (!reason) return false;
-  if (/content did not pass|did not pass content moderation|SAFETY\.INPUT|SEXUALLY_EXPLICIT|policy|unauthorized|auth/i.test(reason)) {
+  if (isPermanentFailureReason(reason)) {
     return false;
   }
-  return /Moderation service temporarily unavailable|temporarily unavailable|INTERNAL|Failed to create task|BytePlus video task timed out|timed out after \d+s|timeout|service unavailable|Bad Gateway|Gateway Timeout/i.test(reason);
+  return isTemporaryFailureReason(reason);
+}
+
+export function isRetryableSubmissionFailure(err) {
+  const reason = getRetryableErrorReason(err);
+  if (!reason || isPermanentFailureReason(reason)) return false;
+  if (err?.status || err?.statusCode) {
+    return isTemporaryFailureReason(reason) || [408, 429, 500, 502, 503, 504].includes(Number(err.status || err.statusCode));
+  }
+  return isTemporaryFailureReason(reason);
 }
 
 function getRetryableUpstreamFailureReason(update) {
@@ -297,4 +332,27 @@ function getRetryableUpstreamFailureReason(update) {
     update?.rawResponse?.task?.error?.errorMessage,
     update?.rawResponse?.task?.error?.reason
   ].filter(Boolean).join(' ');
+}
+
+function getRetryableErrorReason(err) {
+  return [
+    err?.message,
+    err?.code,
+    err?.name,
+    err?.cause?.message,
+    err?.body?.error,
+    err?.body?.message,
+    err?.body?.errorMessage,
+    err?.body?.reason,
+    err?.body?.error?.errorMessage,
+    err?.body?.error?.reason
+  ].filter(Boolean).join(' ');
+}
+
+function isPermanentFailureReason(reason) {
+  return /content did not pass|did not pass content moderation|SAFETY\.INPUT|SEXUALLY_EXPLICIT|policy|unauthorized|auth|invalid input|InvalidParameter|too many reference videos|not available in Explore Mode/i.test(reason);
+}
+
+function isTemporaryFailureReason(reason) {
+  return /Moderation service temporarily unavailable|temporarily unavailable|INTERNAL|Failed to create task|BytePlus video task timed out|timed out after \d+s|timeout|service unavailable|Bad Gateway|Gateway Timeout|operation was aborted|This operation was aborted|ABORT_ERR|AbortError|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|socket hang up|network|fetch failed|empty status|upstream returned empty status|empty response|connection terminated/i.test(reason);
 }

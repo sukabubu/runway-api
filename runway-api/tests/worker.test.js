@@ -22,7 +22,8 @@ function createWorkerHarness({ canStart = { ok: true }, submitError = null } = {
     logRequest: vi.fn(),
     markAccountError: vi.fn(),
     markAccountSuccess: vi.fn(),
-    getTask: vi.fn(() => task)
+    getTask: vi.fn(() => task),
+    requeueTaskForAutoRetry: vi.fn()
   };
   const queue = {
     release: vi.fn(),
@@ -38,7 +39,7 @@ function createWorkerHarness({ canStart = { ok: true }, submitError = null } = {
     db,
     runway,
     queue,
-    config: { submitIntervalMinMs: 0, submitIntervalMaxMs: 0 },
+    config: { submitIntervalMinMs: 0, submitIntervalMaxMs: 0, upstreamAutoRetryAttempts: 3 },
     logger: { warn: vi.fn(), error: vi.fn() }
   });
   return { worker, db, queue, runway, task, account };
@@ -84,6 +85,52 @@ describe('TaskWorker upstream capacity handling', () => {
     );
     expect(db.resetTaskSubmissionState).toHaveBeenCalledWith(task.id);
     expect(queue.release).toHaveBeenCalledWith(task.id);
+  });
+
+  it('requeues retryable submission transport failures instead of failing the task', async () => {
+    const err = new Error('The operation was aborted');
+    err.code = 'ABORT_ERR';
+    const { worker, db, queue, task, account } = createWorkerHarness({ submitError: err });
+
+    await worker.submitOne(task, account);
+
+    expect(db.requeueTaskForAutoRetry).toHaveBeenCalledWith(task.id, expect.objectContaining({
+      reason: expect.stringContaining('The operation was aborted'),
+      error: expect.objectContaining({
+        code: 'ABORT_ERR',
+        message: 'The operation was aborted'
+      })
+    }));
+    expect(db.updateTask).not.toHaveBeenCalledWith(task.id, expect.objectContaining({ status: 'failed' }));
+    expect(db.releaseAccount).toHaveBeenCalledWith(account.id);
+    expect(queue.release).toHaveBeenCalledWith(task.id);
+  });
+
+  it('requeues empty upstream status submission failures', async () => {
+    const err = new Error('upstream returned empty status');
+    const { worker, db, task } = createWorkerHarness({ submitError: err });
+
+    await worker.submitOne(task, { id: 'account-1' });
+
+    expect(db.requeueTaskForAutoRetry).toHaveBeenCalledWith(task.id, expect.objectContaining({
+      reason: expect.stringContaining('upstream returned empty status')
+    }));
+  });
+
+  it('does not requeue permanent submission validation failures', async () => {
+    const err = new Error('too many reference videos, max is 3');
+    err.status = 400;
+    const { worker, db, task } = createWorkerHarness({ submitError: err });
+
+    await worker.submitOne(task, { id: 'account-1' });
+
+    expect(db.requeueTaskForAutoRetry).not.toHaveBeenCalled();
+    expect(db.updateTask).toHaveBeenCalledWith(task.id, expect.objectContaining({
+      status: 'failed',
+      error: expect.objectContaining({
+        message: 'too many reference videos, max is 3'
+      })
+    }));
   });
 });
 
