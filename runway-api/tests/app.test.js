@@ -1065,6 +1065,7 @@ describe('OpenAI compatible image API', () => {
       url: '/v1/images/generations',
       headers: { authorization: 'Bearer secret' },
       payload: {
+        model: 'gpt-image-2',
         prompt: 'draw an apple',
         size: '1024x1024',
         quality: 'medium',
@@ -1167,14 +1168,25 @@ describe('OpenAI compatible image API', () => {
     await new Promise((resolve) => mediaServer.close(resolve));
   });
 
-  it('rejects video references for image generation', async () => {
+  it('uses image edits for references and rejects references on image generations', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-v1-image-video-test-'));
     const mediaServer = http.createServer((request, response) => {
-      response.writeHead(200, { 'Content-Type': 'video/mp4' });
-      response.end(Buffer.from('video'));
+      if (request.url === '/reference.png') {
+        response.writeHead(200, { 'Content-Type': 'image/png' });
+        response.end(Buffer.from('89504e470d0a1a0a', 'hex'));
+        return;
+      }
+      if (request.url === '/reference.mp4') {
+        response.writeHead(200, { 'Content-Type': 'video/mp4' });
+        response.end(Buffer.from('video'));
+        return;
+      }
+      response.writeHead(404);
+      response.end();
     });
     await new Promise((resolve) => mediaServer.listen(0, '127.0.0.1', resolve));
-    const mediaUrl = `http://127.0.0.1:${mediaServer.address().port}/reference.mp4`;
+    const imageUrl = `http://127.0.0.1:${mediaServer.address().port}/reference.png`;
+    const videoUrl = `http://127.0.0.1:${mediaServer.address().port}/reference.mp4`;
     const db = new RunwayDatabase(path.join(dir, 'test.sqlite'), { internalApiKey: 'secret' });
     const app = await buildApp({
       config: { internalApiKey: 'secret', uploadDir: path.join(dir, 'uploads') },
@@ -1195,11 +1207,40 @@ describe('OpenAI compatible image API', () => {
       headers: { authorization: 'Bearer secret' },
       payload: {
         prompt: 'draw an apple',
-        media_urls: [mediaUrl]
+        media_urls: [imageUrl]
       }
     });
     expect(created.statusCode).toBe(400);
-    expect(JSON.parse(created.body).error.message).toContain('only supports image references');
+    expect(JSON.parse(created.body).error.message).toContain('/v1/images/edits');
+
+    const edit = await app.inject({
+      method: 'POST',
+      url: '/v1/images/edits',
+      headers: { authorization: 'Bearer secret' },
+      payload: {
+        model: 'gpt-image-2',
+        prompt: 'edit the apple',
+        image_urls: [imageUrl]
+      }
+    });
+    expect(edit.statusCode).toBe(202);
+    expect(JSON.parse(edit.body)).toMatchObject({
+      object: 'image.generation',
+      model: 'gpt_image_2',
+      status: 'queued'
+    });
+
+    const videoEdit = await app.inject({
+      method: 'POST',
+      url: '/v1/images/edits',
+      headers: { authorization: 'Bearer secret' },
+      payload: {
+        prompt: 'edit the apple',
+        media_urls: [videoUrl]
+      }
+    });
+    expect(videoEdit.statusCode).toBe(400);
+    expect(JSON.parse(videoEdit.body).error.message).toContain('only supports image references');
     await app.close();
     await new Promise((resolve) => mediaServer.close(resolve));
   });

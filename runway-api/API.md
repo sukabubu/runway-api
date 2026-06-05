@@ -236,17 +236,18 @@ curl -L -o output.mp4 \
 
 ### `POST /v1/images/generations`
 
+文生图入口。参考图请使用 `POST /v1/images/edits`。
+
 ```bash
 curl -X POST http://127.0.0.1:8790/v1/images/generations \
   -H "Authorization: Bearer <API_KEY>" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt_image_2",
+    "model": "gpt-image-2",
     "prompt": "A red apple on a clean white background.",
     "size": "1024x1024",
     "quality": "high",
-    "n": 1,
-    "media_urls": ["https://example.com/reference-image.jpg"]
+    "n": 1
   }'
 ```
 
@@ -255,15 +256,12 @@ curl -X POST http://127.0.0.1:8790/v1/images/generations \
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `prompt` | string | 是 | 图片提示词，也兼容 `input`；最大 `3500` 个字符 |
-| `model` | string | 否 | 默认 `gpt_image_2` |
+| `model` | string | 否 | 默认 `gpt-image-2`；兼容 `gpt-image-1`、`gpt-image-1.5`、`gpt-image-1-mini`、`gpt_image_2`，内部映射到 Runway GPT Image 2 |
 | `size` | string | 否 | 图片尺寸，例如 `1024x1024`、`1280x720`；默认按 `16:9`、`1K` 生成 |
 | `quality` | string | 否 | `low`、`medium`、`high` |
 | `n` | number | 否 | 图片数量，只支持 `1` 或 `4` |
-| `media_urls` | string/string[] | 否 | 图片参考 URL，不支持视频 |
-| `references` | array | 否 | 带名称的图片参考素材 |
-| `media[]` | file[] | 否 | multipart 上传的本地图片参考素材 |
 
-创建成功会返回异步任务对象：
+创建成功会返回异步任务对象，不会阻塞等待图片完成：
 
 ```json
 {
@@ -279,6 +277,42 @@ curl -X POST http://127.0.0.1:8790/v1/images/generations \
   "error": null
 }
 ```
+
+### `POST /v1/images/edits`
+
+带参考图的图片编辑入口。支持 JSON URL 参考图和 multipart 本地图片；不支持视频参考。
+
+```bash
+curl -X POST http://127.0.0.1:8790/v1/images/edits \
+  -H "Authorization: Bearer <API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-image-2",
+    "prompt": "Keep the same product, place it on a marble table.",
+    "size": "1024x1024",
+    "quality": "high",
+    "image_urls": ["https://example.com/reference-image.jpg"]
+  }'
+```
+
+Multipart 示例：
+
+```bash
+curl -X POST http://127.0.0.1:8790/v1/images/edits \
+  -H "Authorization: Bearer <API_KEY>" \
+  -F "model=gpt-image-2" \
+  -F "prompt=Keep the same character, change the background." \
+  -F "size=1024x1024" \
+  -F "image[]=@/absolute/path/to/reference.png"
+```
+
+参考图字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `image_urls` | string/string[] | 否 | 图片参考 URL，也兼容 `media_urls`、`reference_urls` |
+| `references` | array | 否 | 带名称的图片参考素材 |
+| `image[]` / `media[]` | file[] | 否 | multipart 上传的本地图片参考素材 |
 
 ## 查询图片
 

@@ -9,18 +9,22 @@ export class ProxyManager {
     const strategy = normalizeProxyStrategy(account?.proxyStrategy || this.db.getRuntimeConfig().proxyStrategyDefault);
     let proxy = null;
     if (preferRotate || strategy === 'per_request') {
-      proxy = this.pickNextProxy(account?.proxyId);
+      proxy = this.pickNextProxy(account?.proxyId, account);
     } else if (strategy === 'fixed' || strategy === 'on_failure') {
       proxy = account?.proxyId ? this.db.getProxy(account.proxyId) : null;
-      if (!proxy?.isActive) proxy = this.pickNextProxy();
+      if (!proxy?.isActive || this.isProxyAssignedToOtherAccount(proxy.id, account)) {
+        proxy = this.pickNextProxy(account?.proxyId, account);
+      }
     }
     if (!proxy?.isActive) proxy = null;
+    this.bindResolvedProxy(account, proxy);
     return { proxy, strategy };
   }
 
   rotateForAccount(account, failedProxyId = null) {
-    const next = this.pickNextProxy(failedProxyId);
+    const next = this.pickNextProxy(failedProxyId, account);
     if (account?.id) this.db.updateAccount(account.id, { proxyId: next?.id || null });
+    if (account) account.proxyId = next?.id || null;
     return next;
   }
 
@@ -31,9 +35,29 @@ export class ProxyManager {
     return this.rotateForAccount(account, proxy.id);
   }
 
-  pickNextProxy(skipId = null) {
+  pickNextProxy(skipId = null, account = null) {
     const proxies = this.db.listActiveProxies();
-    return proxies.find((proxy) => proxy.id !== skipId) || proxies[0] || null;
+    return proxies.find((proxy) => (
+      proxy.id !== skipId &&
+      !this.isProxyAssignedToOtherAccount(proxy.id, account)
+    )) || null;
+  }
+
+  bindResolvedProxy(account, proxy) {
+    if (!account?.id) return;
+    const nextProxyId = proxy?.id || null;
+    if ((account.proxyId || null) === nextProxyId) return;
+    this.db.updateAccount(account.id, { proxyId: nextProxyId });
+    account.proxyId = nextProxyId;
+  }
+
+  isProxyAssignedToOtherAccount(proxyId, account = null) {
+    if (!proxyId || !this.db.listAccounts) return false;
+    return this.db.listAccounts().some((row) => (
+      row.id !== account?.id &&
+      row.isActive !== false &&
+      row.proxyId === proxyId
+    ));
   }
 
   createAgent(proxy) {

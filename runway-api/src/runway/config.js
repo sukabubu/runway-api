@@ -51,6 +51,7 @@ export const RUNWAY_MODELS = [
   },
   {
     id: 'gpt_image_2',
+    publicId: 'gpt-image-2',
     label: 'GPT Image 2',
     kind: 'image',
     taskType: 'gpt_image_2',
@@ -96,7 +97,14 @@ export const RUNWAY_STATUS_MAP = {
 };
 
 export function findRunwayModel(id) {
-  return RUNWAY_MODELS.find((model) => model.id === id) || RUNWAY_MODELS[0];
+  const normalized = normalizeModelId(id);
+  return RUNWAY_MODELS.find((model) => model.id === normalized || model.publicId === id) || RUNWAY_MODELS[0];
+}
+
+export function normalizeModelId(id) {
+  const value = String(id || '').trim();
+  if (['gpt-image-2', 'gpt-image-1', 'gpt-image-1.5', 'gpt-image-1-mini', 'gpt_image_2'].includes(value)) return 'gpt_image_2';
+  return value;
 }
 
 export function mapRunwayStatus(rawStatus) {

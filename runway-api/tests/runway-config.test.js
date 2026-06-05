@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { findRunwayModel, mapRunwayStatus, normalizeTaskInput } from '../src/runway/config.js';
+import { findRunwayModel, mapRunwayStatus, normalizeModelId, normalizeTaskInput } from '../src/runway/config.js';
 
 describe('Runway config', () => {
   it('maps Runway statuses', () => {
@@ -54,6 +54,8 @@ describe('Runway config', () => {
   });
 
   it('normalizes GPT Image 2 inputs', () => {
+    expect(normalizeModelId('gpt-image-2')).toBe('gpt_image_2');
+    expect(normalizeModelId('gpt-image-1')).toBe('gpt_image_2');
     expect(findRunwayModel('gpt_image_2')).toMatchObject({
       kind: 'image',
       taskType: 'gpt_image_2',
@@ -62,8 +64,12 @@ describe('Runway config', () => {
       defaultAspectRatio: '16:9',
       allowedNumImages: [1, 4]
     });
+    expect(findRunwayModel('gpt-image-2')).toMatchObject({
+      id: 'gpt_image_2',
+      publicId: 'gpt-image-2'
+    });
     expect(normalizeTaskInput({
-      model: 'gpt_image_2',
+      model: 'gpt-image-2',
       prompt: 'draw an apple',
       size: '1024x1024',
       quality: 'medium',

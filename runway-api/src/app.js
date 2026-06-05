@@ -517,7 +517,16 @@ export async function buildApp({ config, db, browser, worker, proxyManager = nul
 
   app.post('/v1/images/generations', async (request, reply) => {
     const { fields, files } = await readTaskRequest(request, config.uploadDir);
-    const task = createPendingTask({ db, fields: { model: 'gpt_image_2', ...fields }, files });
+    if (files.length || hasReferenceInputs(fields)) {
+      return reply.code(400).send(toV1Error('invalid_request_error', 'Use /v1/images/edits for image references.'));
+    }
+    const task = createPendingTask({ db, fields: { ...fields, model: fields.model || 'gpt-image-2' }, files });
+    return reply.code(202).send(toV1Image(task, { request, config }));
+  });
+
+  app.post('/v1/images/edits', async (request, reply) => {
+    const { fields, files } = await readTaskRequest(request, config.uploadDir);
+    const task = createPendingTask({ db, fields: { ...fields, model: fields.model || 'gpt-image-2' }, files });
     return reply.code(202).send(toV1Image(task, { request, config }));
   });
 
@@ -699,6 +708,10 @@ function extractReferenceUrls(input = {}) {
     ...normalizeUrlList(input.imageUrls ?? input.image_urls),
     ...normalizeUrlList(input.videoUrls ?? input.video_urls)
   ];
+}
+
+function hasReferenceInputs(input = {}) {
+  return extractReferenceUrls(input).length > 0 || ['media', 'media[]', 'image', 'image[]'].some((key) => input[key] != null);
 }
 
 function normalizeReferenceObjects(value) {
@@ -1260,12 +1273,13 @@ function normalizeAccountPatch(body) {
 
 function toV1Model(model) {
   return {
-    id: model.id,
+    id: model.publicId || model.id,
     object: 'model',
     created: 0,
     owned_by: 'video-api',
     name: model.label,
     taskType: model.kind || 'video',
+    internalId: model.id,
     runwayTaskType: model.taskType,
     durations: model.durations,
     resolutions: model.resolutions,
