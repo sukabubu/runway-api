@@ -1111,17 +1111,31 @@ export class RunwayDatabase {
     return rows.map((row) => hydrateAccount(row, { includeSecret }));
   }
 
-  selectLeastLoadedAccount({ preferredAccountId = null, poolId = undefined, kind = null } = {}) {
+  selectLeastLoadedAccount({ preferredAccountId = null, poolId = undefined, kind = null, excludeTaskId = null, allowPreferredFallback = false } = {}) {
     this.resetExpiredGenerationUsage(preferredAccountId);
     const normalizedPoolId = normalizePoolId(poolId);
     const taskKind = normalizeTaskKind(kind);
+    const preferredAccount = preferredAccountId ? this.getAccount(preferredAccountId, { includeSecret: true }) : null;
+    if (
+      preferredAccount &&
+      allowPreferredFallback &&
+      poolId !== undefined &&
+      normalizePoolId(preferredAccount.poolId) !== normalizedPoolId
+    ) {
+      return null;
+    }
     const candidates = preferredAccountId
-      ? [this.getAccount(preferredAccountId, { includeSecret: true })].filter(Boolean)
+      ? allowPreferredFallback
+        ? [
+            preferredAccount,
+            ...this.getReadyAccounts({ includeSecret: true, poolId, kind: taskKind }).filter((account) => account.id !== preferredAccountId)
+          ].filter(Boolean)
+        : [preferredAccount].filter(Boolean)
       : this.getReadyAccounts({ includeSecret: true, poolId, kind: taskKind });
     for (const account of candidates) {
       if (!isReadyAccount(account)) continue;
       if (poolId !== undefined && normalizePoolId(account.poolId) !== normalizedPoolId) continue;
-      const inflight = this.getAccountKindLoad(account.id, taskKind);
+      const inflight = this.getAccountKindLoad(account.id, taskKind, { excludeTaskId });
       const maxConcurrent = normalizeConcurrency(account.maxConcurrent);
       if (inflight >= maxConcurrent) continue;
       return account;
@@ -1133,7 +1147,13 @@ export class RunwayDatabase {
     const task = this.getTask(taskId);
     const effectivePoolId = poolId === undefined ? task?.poolId ?? null : normalizePoolId(poolId);
     const taskKind = normalizeTaskKind(task?.kind);
-    const account = this.selectLeastLoadedAccount({ preferredAccountId, poolId: effectivePoolId, kind: taskKind });
+    const account = this.selectLeastLoadedAccount({
+      preferredAccountId,
+      poolId: effectivePoolId,
+      kind: taskKind,
+      excludeTaskId: taskId,
+      allowPreferredFallback: true
+    });
     if (!account) return null;
     const now = new Date().toISOString();
     const result = this.db.prepare(`
@@ -1149,10 +1169,11 @@ export class RunwayDatabase {
         AND (
           SELECT COUNT(*) FROM tasks
           WHERE tasks.account_id = accounts.id
+            AND tasks.id != @taskId
             AND tasks.status IN ('pending', 'submitting', 'queuing', 'generating')
             AND COALESCE(tasks.kind, 'video') = @taskKind
         ) < max_concurrent
-    `).run({ id: account.id, now, poolId: effectivePoolId, taskKind });
+    `).run({ id: account.id, now, poolId: effectivePoolId, taskKind, taskId });
     if (result.changes === 0) return null;
     this.db.prepare('UPDATE tasks SET account_id = ?, updated_at = ? WHERE id = ?').run(account.id, now, taskId);
     this.db.prepare('UPDATE assets SET account_id = ?, updated_at = ? WHERE task_id = ?').run(account.id, now, taskId);
@@ -1180,15 +1201,16 @@ export class RunwayDatabase {
     `).get(accountId, normalizeTaskKind(kind)).count || 0;
   }
 
-  getAccountKindLoad(accountId, kind = null) {
+  getAccountKindLoad(accountId, kind = null, { excludeTaskId = null } = {}) {
     if (!accountId) return 0;
     return this.db.prepare(`
       SELECT COUNT(*) AS count
       FROM tasks
       WHERE account_id = ?
+        AND (? IS NULL OR id != ?)
         AND status IN ('pending', 'submitting', 'queuing', 'generating')
         AND COALESCE(kind, 'video') = ?
-    `).get(accountId, normalizeTaskKind(kind)).count || 0;
+    `).get(accountId, excludeTaskId, excludeTaskId, normalizeTaskKind(kind)).count || 0;
   }
 
   markAccountAuthFailed(accountId, message = 'Runway auth failed') {

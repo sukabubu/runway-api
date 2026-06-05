@@ -149,6 +149,83 @@ describe('RunwayDatabase', () => {
     db.close();
   });
 
+  it('does not let a pending task block its own account acquisition', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-test-'));
+    const db = new RunwayDatabase(path.join(dir, 'test.sqlite'));
+    const pool = db.createAccountPool({ name: 'pool', apiKey: 'pool-key' });
+    const preferred = db.createAccount({
+      name: 'preferred',
+      jwt: 'jwt-a',
+      teamId: 1,
+      poolId: pool.id,
+      maxConcurrent: 2
+    });
+    const fallback = db.createAccount({
+      name: 'fallback',
+      jwt: 'jwt-b',
+      teamId: 2,
+      poolId: pool.id,
+      maxConcurrent: 2
+    });
+    db.createTask({
+      id: 'pending-self',
+      accountId: preferred.id,
+      poolId: pool.id,
+      status: 'pending',
+      prompt: 'hello',
+      model: 'seedance_2',
+      duration: 5,
+      resolution: '480p',
+      aspectRatio: '16:9',
+      generateAudio: true,
+      exploreMode: true
+    });
+    db.createTask({
+      id: 'other-pending',
+      accountId: preferred.id,
+      poolId: pool.id,
+      status: 'pending',
+      prompt: 'hello',
+      model: 'seedance_2',
+      duration: 5,
+      resolution: '480p',
+      aspectRatio: '16:9',
+      generateAudio: true,
+      exploreMode: true
+    });
+
+    expect(db.acquireAccountForTask('pending-self', { preferredAccountId: preferred.id, poolId: pool.id }).id).toBe(preferred.id);
+
+    db.createTask({
+      id: 'preferred-full',
+      accountId: preferred.id,
+      poolId: pool.id,
+      status: 'generating',
+      prompt: 'hello',
+      model: 'seedance_2',
+      duration: 5,
+      resolution: '480p',
+      aspectRatio: '16:9',
+      generateAudio: true,
+      exploreMode: true
+    });
+    db.createTask({
+      id: 'needs-fallback',
+      accountId: preferred.id,
+      poolId: pool.id,
+      status: 'pending',
+      prompt: 'hello',
+      model: 'seedance_2',
+      duration: 5,
+      resolution: '480p',
+      aspectRatio: '16:9',
+      generateAudio: true,
+      exploreMode: true
+    });
+    expect(db.acquireAccountForTask('needs-fallback', { preferredAccountId: preferred.id, poolId: pool.id }).id).toBe(fallback.id);
+    db.close();
+  });
+
   it('treats assetGroupId as optional for ready accounts', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runway-api-test-'));
     const db = new RunwayDatabase(path.join(dir, 'test.sqlite'));
